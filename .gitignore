@@ -1,0 +1,30 @@
+# Configuración personal de Claude Code
+CLAUDE.local.md
+
+# Outputs diarios y logs (datos de mercado, no código)
+outputs/
+logs/
+
+# Credenciales y configuración local
+.env
+*.env
+config.local.*
+tastytrade_credentials.*
+
+# uv / Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.python-version
+uv.lock        # opcional: algunos prefieren commitear el lockfile
+
+# Datos de mercado descargados
+data.json
+indicators.json
+*.json         # cuidado: excluye también los de specs/ si los usas
+               # mejor ser explícito y poner solo outputs/ y logs/
+
+# OS
+.DS_Store
+Thumbs.db
