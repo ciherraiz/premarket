@@ -118,20 +118,117 @@ def calc_vix9d_vix_ratio(vix_current: dict) -> dict:
     return base
 
 
+def calc_ivr(vix_current: dict, vix_history: dict) -> dict:
+    """
+    Calcula el IV Rank (IVR) del VIX y asigna un score de volatilidad.
+
+    Fórmula:
+        IVR = (VIX_hoy - VIX_mínimo_52w) / (VIX_máximo_52w - VIX_mínimo_52w) × 100
+
+    Tabla de scoring:
+        IVR > 60%            → +3  PRIMA_ALTA
+        40% ≤ IVR ≤ 60%     → +2  PRIMA_ELEVADA
+        25% ≤ IVR < 40%     → +1  PRIMA_NORMAL
+        15% ≤ IVR < 25%     →  0  PRIMA_BAJA
+        IVR < 15%            → -2  PRIMA_MUY_BAJA
+    """
+    base = {
+        "vix": None,
+        "vix_min_52w": None,
+        "vix_max_52w": None,
+        "ivr": None,
+        "score": 0,
+        "signal": None,
+        "status": "OK",
+        "fecha": vix_current.get("fecha"),
+    }
+
+    try:
+        # Validate history status
+        history_status = vix_history.get("status", "ERROR")
+        if history_status == "INSUFFICIENT_DATA":
+            base["status"] = "INSUFFICIENT_DATA"
+            return base
+        if history_status != "OK":
+            base["status"] = "ERROR"
+            return base
+
+        vix = vix_current.get("vix")
+        if vix is None:
+            base["status"] = "MISSING_DATA"
+            return base
+
+        vix_min = vix_history.get("vix_min_52w")
+        vix_max = vix_history.get("vix_max_52w")
+
+        if vix_min is None or vix_max is None:
+            base["status"] = "ERROR"
+            return base
+
+        base["vix"] = vix
+        base["vix_min_52w"] = vix_min
+        base["vix_max_52w"] = vix_max
+
+        rango = vix_max - vix_min
+        if rango == 0:
+            base["status"] = "ERROR"
+            return base
+
+        dias = vix_history.get("dias_disponibles", 0)
+        if dias < 50:
+            base["status"] = "INSUFFICIENT_DATA"
+            return base
+
+        ivr = round((vix - vix_min) / rango * 100, 2)
+        base["ivr"] = ivr
+
+        if ivr > 60:
+            base["score"] = 3
+            base["signal"] = "PRIMA_ALTA"
+        elif ivr >= 40:
+            base["score"] = 2
+            base["signal"] = "PRIMA_ELEVADA"
+        elif ivr > 25:
+            base["score"] = 1
+            base["signal"] = "PRIMA_NORMAL"
+        elif ivr >= 15:
+            base["score"] = 0
+            base["signal"] = "PRIMA_BAJA"
+        else:
+            base["score"] = -2
+            base["signal"] = "PRIMA_MUY_BAJA"
+
+    except Exception:
+        base["status"] = "ERROR"
+        base["score"] = 0
+
+    return base
+
+
 if __name__ == "__main__":
     import json
     from pathlib import Path
 
     data = json.loads(Path("outputs/data.json").read_text())
+
     slope = calc_vix_vxv_slope(data)
     ratio = calc_vix9d_vix_ratio(data)
+    ivr   = calc_ivr(data, data.get("vix_history", {}))
+
+    d_score = slope["score"] + ratio["score"]
+    v_score = ivr["score"]
 
     indicators = {
-        "fecha": data.get("fecha"),
-        "vix_vxv_slope": slope,
+        "fecha":           data.get("fecha"),
+        "vix_vxv_slope":   slope,
         "vix9d_vix_ratio": ratio,
+        "ivr":             ivr,
+        "d_score":         d_score,
+        "v_score":         v_score,
     }
 
     Path("outputs/indicators.json").write_text(json.dumps(indicators, indent=2))
-    print(f"[calc] vix_vxv_slope={slope['signal']}({slope['score']})  "
-          f"vix9d_vix_ratio={ratio['signal']}({ratio['score']})")
+    print(f"[calc] slope={slope['signal']}({slope['score']})  "
+          f"ratio={ratio['signal']}({ratio['score']})  "
+          f"ivr={ivr['signal']}({ivr['score']})  "
+          f"D={d_score}  V={v_score}")
