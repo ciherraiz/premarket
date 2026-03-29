@@ -24,7 +24,7 @@ basado en estructura de volatilidad.
 
 ## Fuente de datos
 - Proveedor : yfinance
-- Tickers   : ^VIX y ^VXV
+- Tickers   : ^VIX y ^VIX3M (antiguo ^VXV, renombrado por el CBOE en 2018; clave interna: `vxv`)
 - Frecuencia: diario (cierre del día anterior)
 - Periodo   : últimos 5 días (margen para festivos)
 
@@ -68,7 +68,7 @@ ratio = VIX_close / VXV_close
 
 Este indicador comparte la llamada a yfinance con ind_vix9d_vix_ratio y
 ind_vvix_percentile. Los tres se nutren de la misma función
-fetch_vix_term_structure() que descarga ^VIX9D, ^VIX, ^VXV y ^VVIX
+fetch_vix_term_structure() que descarga ^VIX9D, ^VIX, ^VIX3M y ^VVIX
 en una única llamada. No hacer llamadas separadas por indicador.
 
 ## Ubicación del código
@@ -97,7 +97,7 @@ Lee specs/ind_vix_vxv_slope.md completamente antes de escribir ningún código.
 Implementa en este orden exacto:
 
 1. fetch_vix_term_structure() en scripts/fetch_market_data.py
-   Descarga ^VIX9D, ^VIX, ^VXV y ^VVIX de yfinance en una única llamada.
+   Descarga ^VIX9D, ^VIX, ^VIX3M y ^VVIX de yfinance en una única llamada.
    Devuelve un dict con claves: vix9d, vix, vxv, vvix, fecha.
    Maneja los casos de error devolviendo None en cada campo si falla.
 
