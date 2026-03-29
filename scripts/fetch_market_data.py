@@ -7,8 +7,8 @@ def fetch_vix_term_structure() -> dict:
     Descarga VIX9D, VIX, VXV y VVIX de yfinance en una sola llamada.
     Devuelve el cierre más reciente disponible (últimos 5 días para cubrir festivos).
     """
-    tickers = ["^VIX9D", "^VIX", "^VXV", "^VVIX"]
-    key_map = {"^VIX9D": "vix9d", "^VIX": "vix", "^VXV": "vxv", "^VVIX": "vvix"}
+    tickers = ["^VIX9D", "^VIX", "^VIX3M", "^VVIX"]
+    key_map = {"^VIX9D": "vix9d", "^VIX": "vix", "^VIX3M": "vxv", "^VVIX": "vvix"}
 
     result = {k: None for k in key_map.values()}
     result["fecha"] = str(date.today())
@@ -43,3 +43,14 @@ def fetch_vix_term_structure() -> dict:
             result[k] = None
 
     return result
+
+
+if __name__ == "__main__":
+    import json
+    from pathlib import Path
+
+    data = fetch_vix_term_structure()
+    out = Path("outputs")
+    out.mkdir(exist_ok=True)
+    (out / "data.json").write_text(json.dumps(data, indent=2))
+    print(f"[fetch] status={data['status']} fecha={data['fecha']}")

@@ -15,7 +15,11 @@ El orquestador `run.py` ejecuta los tres pasos en secuencia con un único comand
 
 ### Estado actual
 La función `fetch_vix_term_structure() -> dict` ya está implementada.
-Descarga `^VIX9D`, `^VIX`, `^VXV`, `^VVIX` de yfinance en una sola llamada.
+Descarga `^VIX9D`, `^VIX`, `^VIX3M`, `^VVIX` de yfinance en una sola llamada.
+
+> Nota: el CBOE renombró `^VXV` a `^VIX3M` en 2018. Se usa `^VIX3M` como fuente,
+> pero el valor se almacena internamente con la clave `vxv` para mantener compatibilidad
+> con los indicadores (`calc_vix_vxv_slope` espera `vxv` en el dict de entrada).
 
 ### Añadir: bloque `__main__`
 Cuando se ejecuta como script, guarda el resultado en `outputs/data.json`.

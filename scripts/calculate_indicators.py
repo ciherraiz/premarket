@@ -116,3 +116,22 @@ def calc_vix9d_vix_ratio(vix_current: dict) -> dict:
         base["score"] = 0
 
     return base
+
+
+if __name__ == "__main__":
+    import json
+    from pathlib import Path
+
+    data = json.loads(Path("outputs/data.json").read_text())
+    slope = calc_vix_vxv_slope(data)
+    ratio = calc_vix9d_vix_ratio(data)
+
+    indicators = {
+        "fecha": data.get("fecha"),
+        "vix_vxv_slope": slope,
+        "vix9d_vix_ratio": ratio,
+    }
+
+    Path("outputs/indicators.json").write_text(json.dumps(indicators, indent=2))
+    print(f"[calc] vix_vxv_slope={slope['signal']}({slope['score']})  "
+          f"vix9d_vix_ratio={ratio['signal']}({ratio['score']})")
