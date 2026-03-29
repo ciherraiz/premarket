@@ -6,39 +6,75 @@ def print_scorecard(indicators: dict) -> None:
     fecha = indicators.get("fecha", "N/A")
     slope = indicators.get("vix_vxv_slope", {})
     ratio = indicators.get("vix9d_vix_ratio", {})
+    ivr   = indicators.get("ivr", {})
 
-    d_score = slope.get("score", 0) + ratio.get("score", 0)
-    sign = "+" if d_score >= 0 else ""
+    d_score = indicators.get("d_score", slope.get("score", 0) + ratio.get("score", 0))
+    v_score = indicators.get("v_score", ivr.get("score", 0))
 
-    sep = "=" * 62
+    sep  = "=" * 62
     line = "-" * 62
 
+    def _sign(n):
+        return f"+{n}" if n >= 0 else str(n)
+
     print(sep)
-    print(f"  PRE-MARKET SCORECARD - {fecha}")
+    print(f"  PRE-MARKET SCORECARD — {fecha}")
     print(sep)
-    print(f"  {'Indicador':<20} {'Valores':>20}  {'Ratio':>7}  {'Score':>5}  Signal")
+    print()
+
+    # --- D-SCORE block ---
+    print("  [D-SCORE — DIRECCIONAL]")
+    print(f"  {'Indicador':<20} {'Valor':<26} {'Score':<6} Signal")
     print(line)
 
-    vix = slope.get("vix")
-    vxv = slope.get("vxv")
-    slope_ratio = slope.get("ratio")
-    slope_score = slope.get("score", 0)
+    # VIX/VXV Slope row
+    slope_status = slope.get("status", "ERROR")
+    if slope_status == "OK":
+        vix = slope.get("vix")
+        vxv = slope.get("vxv")
+        slope_val = f"VIX={vix}  VXV={vxv}"
+    else:
+        slope_val = f"[{slope_status}]"
+    slope_score  = slope.get("score", 0)
     slope_signal = slope.get("signal", "N/A")
-    slope_vals = f"VIX={vix}  VXV={vxv}"
-    score_str = f"+{slope_score}" if slope_score > 0 else str(slope_score)
-    print(f"  {'VIX/VXV Slope':<20} {slope_vals:>20}  {str(slope_ratio):>7}  {score_str:>5}  {slope_signal}")
+    print(f"  {'VIX/VXV Slope':<20} {slope_val:<26} {_sign(slope_score):<6} {slope_signal}")
 
-    vix9d = ratio.get("vix9d")
-    vix2 = ratio.get("vix")
-    ratio_ratio = ratio.get("ratio")
-    ratio_score = ratio.get("score", 0)
+    # VIX9D/VIX Ratio row
+    ratio_status = ratio.get("status", "ERROR")
+    if ratio_status == "OK":
+        vix9d = ratio.get("vix9d")
+        vix2  = ratio.get("vix")
+        ratio_val = f"VIX9D={vix9d}  VIX={vix2}"
+    else:
+        ratio_val = f"[{ratio_status}]"
+    ratio_score  = ratio.get("score", 0)
     ratio_signal = ratio.get("signal", "N/A")
-    ratio_vals = f"VIX9D={vix9d}  VIX={vix2}"
-    score_str2 = f"+{ratio_score}" if ratio_score > 0 else str(ratio_score)
-    print(f"  {'VIX9D/VIX Ratio':<20} {ratio_vals:>20}  {str(ratio_ratio):>7}  {score_str2:>5}  {ratio_signal}")
+    print(f"  {'VIX9D/VIX Ratio':<20} {ratio_val:<26} {_sign(ratio_score):<6} {ratio_signal}")
 
     print(line)
-    print(f"  D-Score parcial (direccional):  {sign}{d_score}")
+    print(f"  D-Score (direccional):  {_sign(d_score)}")
+    print()
+
+    # --- V-SCORE block ---
+    print("  [V-SCORE — VOLATILIDAD]")
+    print(f"  {'Indicador':<20} {'Valor':<26} {'Score':<6} Signal")
+    print(line)
+
+    # IV Rank (IVR) row
+    ivr_status = ivr.get("status", "ERROR")
+    if ivr_status == "OK":
+        vix_ivr = ivr.get("vix")
+        ivr_val_num = ivr.get("ivr")
+        ivr_val = f"VIX={vix_ivr}  IVR={ivr_val_num}%"
+    else:
+        ivr_val = f"[{ivr_status}]"
+    ivr_score  = ivr.get("score", 0)
+    ivr_signal = ivr.get("signal", "N/A")
+    print(f"  {'IV Rank (IVR)':<20} {ivr_val:<26} {_sign(ivr_score):<6} {ivr_signal}")
+
+    print(line)
+    print(f"  V-Score (volatilidad):  {_sign(v_score)}")
+    print()
     print(sep)
 
 
