@@ -1,10 +1,13 @@
 import yfinance as yf
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 try:
     from tastytrade_client import TastyTradeClient
 except ImportError:
     TastyTradeClient = None  # SDK no instalado o script ejecutado fuera de scripts/
+
+# Número máximo de strikes a suscribir por vencimiento (duplicada de calculate_indicators)
+GEX_MAX_STRIKES = 60
 
 
 def fetch_vix_term_structure() -> dict:
@@ -235,6 +238,77 @@ def fetch_es_quote() -> dict:
     return result
 
 
+def fetch_option_chain(
+    symbol: str = "SPXW",
+    days_ahead: int = 5,
+    max_strikes: int = GEX_MAX_STRIKES,
+    spot: float | None = None,
+) -> dict:
+    """
+    Obtiene la cadena de opciones para hoy + los próximos days_ahead días naturales,
+    limitada a max_strikes strikes ATM por vencimiento.
+
+    Args:
+        symbol:      símbolo de opciones (default "SPXW")
+        days_ahead:  días naturales adicionales a hoy (default 5)
+        max_strikes: strikes máximos por vencimiento, pasado a get_option_chain()
+        spot:        precio de referencia para seleccionar strikes ATM
+
+    Returns:
+        {
+            "contracts":   list[dict],
+            "expiries":    list[str],
+            "n_contracts": int,
+            "max_strikes": int,
+            "status":      str,   # "OK" | "ERROR" | "EMPTY_CHAIN"
+        }
+    """
+    result = {
+        "contracts":   [],
+        "expiries":    [],
+        "n_contracts": 0,
+        "max_strikes": max_strikes,
+        "status":      "EMPTY_CHAIN",
+    }
+
+    if TastyTradeClient is None:
+        result["status"] = "MISSING_DATA"
+        return result
+
+    try:
+        client = TastyTradeClient()
+        today = date.today()
+        all_contracts = []
+        processed_expiries = []
+
+        for i in range(days_ahead + 1):
+            expiry_str = str(today + timedelta(days=i))
+            contracts = client.get_option_chain(
+                symbol,
+                expiry=expiry_str,
+                max_strikes=max_strikes,
+                spot=spot,
+            )
+            if contracts:
+                all_contracts.extend(contracts)
+                processed_expiries.append(expiry_str)
+
+        if not all_contracts:
+            return result
+
+        result["contracts"]   = all_contracts
+        result["expiries"]    = processed_expiries
+        result["n_contracts"] = len(all_contracts)
+        result["status"]      = "OK"
+
+    except EnvironmentError:
+        result["status"] = "MISSING_DATA"
+    except Exception:
+        result["status"] = "ERROR"
+
+    return result
+
+
 if __name__ == "__main__":
     import json
     from pathlib import Path
@@ -248,11 +322,23 @@ if __name__ == "__main__":
     es_data = fetch_es_quote()
     spx_ohlcv_data = fetch_spx_ohlcv()
 
+    # Extraer spot del último cierre del SPX para seleccionar strikes ATM
+    spx_spot = None
+    if spx_ohlcv_data.get("ohlcv"):
+        spx_spot = spx_ohlcv_data["ohlcv"][-1]["Close"]
+
+    option_chain = fetch_option_chain(
+        "SPXW", days_ahead=5, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
+    )
+
     data = {**vix_data, **es_prev_data, **es_data}
-    data["spx_ohlcv"] = spx_ohlcv_data
+    data["spx_ohlcv"]    = spx_ohlcv_data
+    data["spx_spot"]     = spx_spot
+    data["option_chain"] = option_chain
     data["fecha"] = vix_data.get("fecha") or str(date.today())
 
     (out / "data.json").write_text(json.dumps(data, indent=2))
     print(f"[fetch] status={data['status']} fecha={data['fecha']} "
           f"vix_history={vix_data['vix_history']['status']} "
-          f"spx_ohlcv={spx_ohlcv_data['status']}(bars={spx_ohlcv_data['bars']})")
+          f"spx_ohlcv={spx_ohlcv_data['status']}(bars={spx_ohlcv_data['bars']}) "
+          f"option_chain={option_chain['status']}(n={option_chain['n_contracts']})")

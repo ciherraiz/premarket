@@ -15,7 +15,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from scripts.calculate_indicators import calc_net_gex, _calc_gamma_bs
+from scripts.calculate_indicators import calc_net_gex
 
 
 # ---------------------------------------------------------------------------
@@ -25,21 +25,13 @@ from scripts.calculate_indicators import calc_net_gex, _calc_gamma_bs
 TODAY = "2026-03-30"
 
 
-def _make_contract(
-    strike,
-    option_type,
-    oi,
-    gamma=None,
-    iv=0.15,
-    expiry=TODAY,
-):
+def _make_contract(strike, option_type, oi, gamma=None, expiry=TODAY):
     return {
-        "strike": strike,
-        "option_type": option_type,  # "C" o "P"
+        "strike":        strike,
+        "option_type":   option_type,  # "C" o "P"
         "open_interest": oi,
-        "gamma": gamma,
-        "iv": iv,
-        "expiry": expiry,
+        "gamma":         gamma,
+        "expiry":        expiry,
     }
 
 
@@ -54,30 +46,7 @@ def _make_chain(contracts, status="OK"):
 
 
 # ---------------------------------------------------------------------------
-# Grupo 1: Gamma sintética Black-Scholes
-# ---------------------------------------------------------------------------
-
-
-def test_gamma_bs_normal():
-    """T>0, iv>0, spot y strike ATM → gamma > 0"""
-    gamma = _calc_gamma_bs(spot=5200.0, strike=5200.0, iv=0.15, days_to_exp=1)
-    assert gamma > 0, f"Se esperaba gamma positiva, obtenido {gamma}"
-
-
-def test_gamma_bs_t_cero():
-    """T=0 (contrato expirado) → gamma = 0"""
-    gamma = _calc_gamma_bs(spot=5200.0, strike=5200.0, iv=0.15, days_to_exp=0)
-    assert gamma == 0.0
-
-
-def test_gamma_bs_iv_cero():
-    """iv=0 (sin datos de volatilidad) → gamma = 0"""
-    gamma = _calc_gamma_bs(spot=5200.0, strike=5200.0, iv=0.0, days_to_exp=1)
-    assert gamma == 0.0
-
-
-# ---------------------------------------------------------------------------
-# Grupo 2: Flip Level
+# Grupo 1: Flip Level
 # ---------------------------------------------------------------------------
 
 
@@ -210,10 +179,7 @@ def _chain_with_net_gex(target_bn: float, spot: float = 5200.0):
     """
     Construye una cadena mínima que produce aproximadamente target_bn billions de GEX.
     GEX = gamma × OI × 100 × spot² / 1e9
-    Para spot=5200, spot²=27_040_000:
-      gamma × OI × 100 × 27_040_000 / 1e9 = target_bn
-      gamma × OI = target_bn × 1e9 / (100 × 27_040_000) ≈ target_bn × 369.82
-    Usamos gamma=0.001 fijo, OI = round(target_bn × 369_820).
+    Usamos gamma=0.001 fijo, OI calculado para alcanzar el target.
     """
     factor = 1e9 / (100 * spot**2)
     oi = max(1, round(abs(target_bn) * factor / 0.001))
@@ -284,11 +250,11 @@ def test_spot_none():
     assert result["score_flip"] == 0
 
 
-def test_sin_gamma_ni_iv():
-    """Contratos con gamma=None e iv=0 → todos los GEX=0 → status=ERROR, ambos scores=0"""
+def test_sin_gamma():
+    """Contratos con gamma=None → ninguno aporta GEX → status=ERROR, ambos scores=0"""
     contracts = [
-        _make_contract(5200, "C", oi=1000, gamma=None, iv=0.0),
-        _make_contract(5200, "P", oi=1000, gamma=None, iv=0.0),
+        _make_contract(5200, "C", oi=1000, gamma=None),
+        _make_contract(5200, "P", oi=1000, gamma=None),
     ]
     chain = _make_chain(contracts)
     result = calc_net_gex(chain, spot=5200.0, fecha=TODAY)

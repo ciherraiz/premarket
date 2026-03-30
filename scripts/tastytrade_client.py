@@ -13,11 +13,12 @@ Dependencias: tastytrade>=9.0, python-dotenv>=1.0
 
 import asyncio
 import os
+from datetime import date, timedelta
 
 from dotenv import load_dotenv
 from tastytrade import DXLinkStreamer, Session
-from tastytrade.dxfeed import Quote
-from tastytrade.instruments import Future
+from tastytrade.dxfeed import Greeks, Quote, Summary
+from tastytrade.instruments import Future, NestedOptionChain
 
 
 class TastyTradeClient:
@@ -92,9 +93,158 @@ class TastyTradeClient:
 
         return result
 
+    def get_option_chain(
+        self,
+        symbol: str,
+        expiry: str,
+        max_strikes: int = 60,
+        spot: float | None = None,
+    ) -> list[dict]:
+        """
+        Devuelve la cadena de opciones para (symbol, expiry).
+
+        Obtiene la estructura de strikes via NestedOptionChain (REST), selecciona
+        los max_strikes más cercanos al spot y recupera Greeks + Summary via DXLink.
+
+        Args:
+            symbol:      ej. "SPXW"
+            expiry:      fecha en formato "YYYY-MM-DD"
+            max_strikes: número máximo de strikes a suscribir (default 60)
+            spot:        precio de referencia para ordenar strikes por proximidad ATM
+
+        Returns:
+            lista de contratos [{strike, option_type, expiry, open_interest, gamma, iv}]
+            Lista vacía si no hay datos para ese vencimiento.
+        """
+        try:
+            return asyncio.run(
+                self._fetch_option_chain_async(symbol, expiry, max_strikes, spot)
+            )
+        except EnvironmentError:
+            raise
+        except Exception:
+            return []
+
     # ------------------------------------------------------------------
     # Métodos privados async
     # ------------------------------------------------------------------
+
+    async def _collect_events(self, streamer, event_class, symbols, timeout=30.0):
+        """Recoge un evento por símbolo con timeout global."""
+        collected = {}
+        remaining = set(symbols)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        while remaining:
+            time_left = deadline - loop.time()
+            if time_left <= 0:
+                break
+            try:
+                event = await asyncio.wait_for(
+                    streamer.get_event(event_class),
+                    timeout=min(5.0, time_left),
+                )
+                sym = event.event_symbol
+                if sym in remaining:
+                    collected[sym] = event
+                    remaining.discard(sym)
+            except asyncio.TimeoutError:
+                break
+
+        return collected
+
+    async def _fetch_option_chain_async(
+        self,
+        symbol: str,
+        expiry_str: str,
+        max_strikes: int,
+        spot: float | None,
+    ) -> list[dict]:
+        """Lógica async de get_option_chain."""
+        target_date = date.fromisoformat(expiry_str)
+
+        # 1. Obtener estructura de la cadena via REST
+        chains = await NestedOptionChain.get(self.session, symbol)
+        if not chains:
+            return []
+
+        chain = chains[0]
+
+        # 2. Buscar el vencimiento objetivo
+        expiration = next(
+            (e for e in chain.expirations if e.expiration_date == target_date),
+            None,
+        )
+        if expiration is None:
+            return []
+
+        # 3. Seleccionar strikes más cercanos al spot
+        strikes = list(expiration.strikes)
+        if spot and strikes:
+            strikes.sort(key=lambda s: abs(float(s.strike_price) - spot))
+        strikes = strikes[:max_strikes]
+
+        if not strikes:
+            return []
+
+        # 4. Construir lista de (streamer_symbol, strike_price, option_type)
+        contracts_meta = []
+        all_syms = []
+        for strike in strikes:
+            sp = float(strike.strike_price)
+            for sym, otype in [
+                (strike.call_streamer_symbol, "C"),
+                (strike.put_streamer_symbol, "P"),
+            ]:
+                if sym:
+                    contracts_meta.append((sym, sp, otype))
+                    all_syms.append(sym)
+
+        if not all_syms:
+            return []
+
+        # 5. Suscribir a Greeks y Summary, recoger eventos
+        async with DXLinkStreamer(self.session) as streamer:
+            await streamer.subscribe(Greeks, all_syms)
+            await streamer.subscribe(Summary, all_syms)
+            greeks_by_sym = await self._collect_events(
+                streamer, Greeks, all_syms, timeout=30.0
+            )
+            summary_by_sym = await self._collect_events(
+                streamer, Summary, all_syms, timeout=30.0
+            )
+
+        # 6. Construir resultado
+        result = []
+        for streamer_sym, strike_price, option_type in contracts_meta:
+            greek = greeks_by_sym.get(streamer_sym)
+            summ = summary_by_sym.get(streamer_sym)
+
+            gamma = None
+            if greek is not None and greek.gamma is not None:
+                g = float(greek.gamma)
+                gamma = g if g > 0 else None
+
+            iv = None
+            if greek is not None and greek.volatility is not None:
+                v = float(greek.volatility)
+                iv = v if v > 0 else None
+
+            oi = 0
+            if summ is not None and summ.open_interest is not None:
+                oi = int(summ.open_interest)
+
+            result.append({
+                "strike":        strike_price,
+                "option_type":   option_type,
+                "expiry":        expiry_str,
+                "open_interest": oi,
+                "gamma":         gamma,
+                "iv":            iv,
+            })
+
+        return result
 
     async def _resolve_and_fetch(self, product_code: str) -> dict | None:
         """
