@@ -25,18 +25,28 @@ Produce dos scores para el D-Score (IND-03 y IND-04) y tres niveles clave como s
 ### Cadena de opciones — nueva función `fetch_option_chain()`
 
 **Símbolo:** SPXW (opciones semanales del SPX, incluyen 0DTE)
-**Vencimientos:** hoy + los 5 días naturales siguientes (captura 0DTE + weekly más cercano)
-**Campos necesarios por contrato:** `strike`, `option_type` (C/P), `open_interest`, `gamma`, `iv`
+**Campos necesarios por contrato:** `strike`, `option_type` (C/P), `open_interest`, `gamma`
+
+Se llama **dos veces** con distintos rangos de vencimiento:
+
+| Llamada | `days_ahead` | Uso |
+|---------|-------------|-----|
+| 0DTE | `0` (solo hoy) | flip_level, put_wall, call_wall, max_pain |
+| Multi-día | `5` (hoy + 5 días naturales) | net_gex_bn total |
+
+Rationale: los niveles intraday (flip, walls, max_pain) reflejan la presión de hedging de opciones
+que expiran **hoy** — mezclar el weekly contamina los niveles con gamma que no colapsa intraday.
+El régimen GEX (signo) necesita el posicionamiento total del dealer, por eso usa la term structure completa.
 
 ```python
-def fetch_option_chain(symbol: str = "SPXW", days_ahead: int = 5) -> dict:
+def fetch_option_chain(symbol: str = "SPXW", days_ahead: int = 0) -> dict:
     """
     Obtiene la cadena completa de opciones SPXW para hoy + los próximos days_ahead días.
     Usa la herramienta MCP get_option_chain de TastyTrade.
 
     Returns:
         {
-            "contracts": list[dict],  # [{strike, option_type, expiry, open_interest, gamma, iv}, ...]
+            "contracts": list[dict],  # [{strike, option_type, expiry, open_interest, gamma}, ...]
             "expiries":  list[str],   # fechas procesadas en formato YYYY-MM-DD
             "n_contracts": int,
             "status":    str,         # "OK" | "ERROR" | "EMPTY_CHAIN"
@@ -44,8 +54,9 @@ def fetch_option_chain(symbol: str = "SPXW", days_ahead: int = 5) -> dict:
     """
 ```
 
-**Gamma:** usar el valor del broker si está disponible. Si `gamma` es `None` o `0` para un contrato
-con `iv > 0`, calcular con Black-Scholes (ver sección de gamma sintética).
+**Gamma:** usar el valor del broker directamente. Si `gamma` es `None` o `0` para un contrato,
+ese contrato se excluye del cálculo (contribución GEX = 0). No hay fallback Black-Scholes
+porque el SDK de TastyTrade devuelve gamma vía `Greeks` de DXLink.
 
 ### Spot del SPX — reutilizar de data.json
 
@@ -63,51 +74,41 @@ GEX_contrato = gamma × open_interest × 100 × spot² / 1_000_000_000
 
 El divisor 1B convierte el resultado a miles de millones de dólares (billions).
 
-### GEX por strike
+### GEX por strike — cadena 0DTE
 
 ```
-gex_by_strike[strike] = Σ GEX_contrato  (todos los vencimientos, mismo strike)
+gex_by_strike_0dte[strike] = Σ GEX_contrato  (solo vencimiento de hoy)
+```
+
+### GEX por strike — cadena multi-día
+
+```
+gex_by_strike_all[strike] = Σ GEX_contrato  (todos los vencimientos)
 ```
 
 ### Net GEX total
 
 ```
-net_gex = Σ gex_by_strike  (todos los strikes)
+net_gex = Σ gex_by_strike_all  (todos los strikes, cadena multi-día)
 ```
 
-### Gamma sintética con Black-Scholes (fallback)
+### Subindicadores derivados (usan cadena 0DTE)
 
-Si el broker no devuelve gamma para un contrato (`gamma` es `None` o `0` con `iv > 0`):
-
+**Flip Level** — frontera entre régimen long y short gamma (cadena 0DTE):
 ```
-T  = días_hasta_vencimiento / 365.25
-d1 = (ln(spot/strike) + (r + 0.5 × iv²) × T) / (iv × √T)
-gamma = N'(d1) / (spot × iv × √T)
-```
-
-Donde:
-- `r = 0.05` (tipo libre de riesgo aproximado)
-- `iv` = volatilidad implícita como decimal (0.15 para 15%)
-- `N'(d1)` = densidad de la distribución normal estándar evaluada en d1
-- Si `T ≤ 0` o `iv ≤ 0` → `gamma = 0` (contrato expirado o sin datos)
-
-### Subindicadores derivados
-
-**Flip Level** — frontera entre régimen long y short gamma:
-```
-gex_cum = cumsum(gex_by_strike ordenado ascendente por strike)
+gex_cum = cumsum(gex_by_strike_0dte ordenado ascendente por strike)
 flip_level = primer strike donde gex_cum cruza de negativo a positivo
 ```
 Si el GEX acumulado nunca cruza cero → `flip_level = None`
 
-**Put Wall** — mayor concentración de puts (soporte gravitacional):
+**Put Wall** — mayor concentración de puts, soporte gravitacional (cadena 0DTE):
 ```
-put_wall = strike donde gex_by_strike es mínimo (valor más negativo)
+put_wall = strike donde gex_by_strike_0dte es mínimo (valor más negativo)
 ```
 
-**Call Wall** — mayor concentración de calls (resistencia):
+**Call Wall** — mayor concentración de calls, resistencia (cadena 0DTE):
 ```
-call_wall = strike donde gex_by_strike es máximo (valor más positivo)
+call_wall = strike donde gex_by_strike_0dte es máximo (valor más positivo)
 ```
 
 **Max Pain** — precio de mínimo valor intrínseco para compradores (solo 0DTE):
@@ -125,10 +126,14 @@ El max pain usa **solo el vencimiento de hoy** (0DTE); los vencimientos posterio
 
 | net_gex_bn      | Score | Signal               |
 |-----------------|-------|----------------------|
-| > +2B           | +3    | LONG_GAMMA_FUERTE    |
-| 0 a +2B         | +1    | LONG_GAMMA_SUAVE     |
-| -2B a 0         | -1    | SHORT_GAMMA_SUAVE    |
-| < -2B           | -3    | SHORT_GAMMA_FUERTE   |
+| > +15B          | +3    | LONG_GAMMA_FUERTE    |
+| 0 a +15B        | +1    | LONG_GAMMA_SUAVE     |
+| -5B a 0         | -1    | SHORT_GAMMA_SUAVE    |
+| < -5B           | -3    | SHORT_GAMMA_FUERTE   |
+
+Nota: el SPX tiene OI masivo — los valores típicos son decenas de billions en días normales,
+y pueden bajar a terreno negativo (-5B a -20B) en días de alta volatilidad.
+Fuente de referencia para calibración inicial: SpotGamma / SqueezeMetrics.
 
 ### IND-04: Score por Flip Level
 
@@ -142,7 +147,8 @@ El max pain usa **solo el vencimiento de hoy** (0DTE); los vencimientos posterio
 para facilitar calibración una vez haya datos reales del MCP:
 
 ```python
-GEX_UMBRAL_FUERTE = 2.0   # billions — umbral long/short gamma fuerte vs suave
+GEX_UMBRAL_FUERTE  = 15.0   # billions — long gamma fuerte
+GEX_UMBRAL_NEGATIVO = 5.0   # billions — short gamma fuerte (valor absoluto)
 ```
 
 ## Output
@@ -167,9 +173,8 @@ GEX_UMBRAL_FUERTE = 2.0   # billions — umbral long/short gamma fuerte vs suave
 
     # Contexto
     "spot":          float,   # precio del SPX usado en el cálculo
-    "n_strikes":     int,     # número de strikes distintos procesados
-    "n_expiries":    int,     # número de vencimientos incluidos
-    "gamma_source":  str,     # "broker" | "black_scholes" | "mixed"
+    "n_strikes":     int,     # número de strikes distintos procesados (cadena 0DTE)
+    "n_expiries":    int,     # número de vencimientos incluidos (cadena multi-día)
 
     # Estado
     "status":        str,     # "OK" | "ERROR" | "MISSING_DATA" | "EMPTY_CHAIN"
@@ -182,7 +187,7 @@ GEX_UMBRAL_FUERTE = 2.0   # billions — umbral long/short gamma fuerte vs suave
 | Situación | status | score_gex | score_flip | Comportamiento |
 |-----------|--------|-----------|------------|----------------|
 | Cadena vacía o MCP sin respuesta | `EMPTY_CHAIN` | 0 | 0 | Pipeline continúa |
-| Ningún contrato con gamma ni IV | `ERROR` | 0 | 0 | Pipeline continúa |
+| Ningún contrato con gamma válida | `ERROR` | 0 | 0 | Pipeline continúa |
 | Spot no disponible o None | `MISSING_DATA` | 0 | 0 | Pipeline continúa |
 | Flip level no encontrado | `OK` | calculado | 0 / `SIN_FLIP` | Pipeline continúa |
 | Cualquier excepción no controlada | `ERROR` | 0 | 0 | Pipeline continúa |
@@ -195,15 +200,19 @@ En caso de error, los campos numéricos (`net_gex_bn`, `flip_level`, `put_wall`,
 
 ### 1. fetch_market_data.py
 
-Añadir `fetch_option_chain()` y obtener `spx_spot`:
+Añadir `fetch_option_chain()` y obtener `spx_spot`. Se llama **dos veces**:
 
 ```python
 # Nueva función
-def fetch_option_chain(symbol: str = "SPXW", days_ahead: int = 5) -> dict: ...
+def fetch_option_chain(symbol: str = "SPXW", days_ahead: int = 0) -> dict: ...
 
 # En el bloque principal:
-chain_data   = fetch_option_chain("SPXW", days_ahead=5)
-data["option_chain"] = chain_data
+chain_0dte  = fetch_option_chain("SPXW", days_ahead=0)  # niveles intraday
+chain_multi = fetch_option_chain("SPXW", days_ahead=5)  # régimen GEX
+
+data["option_chain_0dte"]  = chain_0dte
+data["option_chain_multi"] = chain_multi
+
 # spx_spot: añadir $SPX.X a la llamada get_quotes existente de ES premarket
 data["spx_spot"] = <valor de $SPX.X del quote>
 ```
@@ -217,9 +226,10 @@ GEX_UMBRAL_FUERTE = 2.0   # billions
 
 Nueva función:
 ```python
-def calc_net_gex(chain_data: dict, spot: float, fecha: str) -> dict:
+def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -> dict:
     """
-    chain_data: resultado de fetch_option_chain() — dict con clave "contracts"
+    chain_0dte:  resultado de fetch_option_chain(days_ahead=0) — niveles intraday
+    chain_multi: resultado de fetch_option_chain(days_ahead=5) — régimen GEX
     spot: precio del SPX (de data["spx_spot"])
     fecha: fecha del análisis en formato YYYY-MM-DD
     """
@@ -250,19 +260,23 @@ Flip Level (IND-04) Flip=5200  Spot=5215.0   +2    SOBRE_FLIP
 
 ## Tests a implementar
 
-Ver `tests/test_ind_net_gex.py`. Los tests cubren 6 grupos:
+Ver `tests/test_ind_net_gex.py`. Los tests cubren 5 grupos:
 
-1. **Gamma sintética** (3 tests): `_calc_gamma_bs()` con T>0, T=0, iv=0
-2. **Flip Level** (3 tests): detección correcta, GEX siempre positivo (None), spot bajo el flip
-3. **Put Wall / Call Wall** (2 tests): concentración correcta con cadena asimétrica
-4. **Max Pain** (2 tests): cálculo con cadena sencilla y valor conocido; un único strike
-5. **Scoring Net GEX** (4 tests): los cuatro rangos de score_gex
-6. **Casos de error** (4 tests): cadena vacía, spot None, sin gamma/IV, excepción sin propagarse
+1. **Flip Level** (3 tests): detección correcta, GEX siempre positivo (None), spot bajo el flip
+2. **Put Wall / Call Wall** (2 tests): concentración correcta con cadena asimétrica
+3. **Max Pain** (2 tests): cálculo con cadena sencilla y valor conocido; un único strike
+4. **Scoring Net GEX** (4 tests): los cuatro rangos de score_gex
+5. **Casos de error** (3 tests): cadena vacía, spot None, ningún contrato con gamma válida
+
+Nota: no hay tests de gamma sintética porque el SDK devuelve `gamma` directamente — los contratos
+sin gamma simplemente se excluyen del cálculo.
 
 ## Verificación
 
-1. Ejecutar `fetch_market_data.py` — `data.json` debe tener `option_chain.n_contracts > 0` y `status: "OK"`.
-2. Ejecutar `calculate_indicators.py` — `indicators.json` debe tener `net_gex` con los 14 campos.
+1. Ejecutar `fetch_market_data.py` — `data.json` debe tener `option_chain_0dte.n_contracts > 0`,
+   `option_chain_multi.n_contracts > 0` y ambos con `status: "OK"`.
+2. Ejecutar `calculate_indicators.py` — `indicators.json` debe tener `net_gex` con los 13 campos.
 3. Verificar que `d_score` = suma de los 5 indicadores (3 previos + score_gex + score_flip).
 4. Caso límite: pasar cadena vacía → `status: "EMPTY_CHAIN"`, ambos scores = 0, sin excepción.
-5. Verificar `gamma_source`: cadena solo con IV sin gamma → `"black_scholes"` o `"mixed"`.
+5. Verificar que `flip_level`, `put_wall`, `call_wall`, `max_pain` se calculan con 0DTE solamente
+   (controlar pasando cadenas con distinto número de contratos y comprobar `n_strikes`).

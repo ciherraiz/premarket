@@ -327,18 +327,23 @@ if __name__ == "__main__":
     if spx_ohlcv_data.get("ohlcv"):
         spx_spot = spx_ohlcv_data["ohlcv"][-1]["Close"]
 
-    option_chain = fetch_option_chain(
+    chain_0dte  = fetch_option_chain(
+        "SPXW", days_ahead=0, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
+    )
+    chain_multi = fetch_option_chain(
         "SPXW", days_ahead=5, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
     )
 
     data = {**vix_data, **es_prev_data, **es_data}
-    data["spx_ohlcv"]    = spx_ohlcv_data
-    data["spx_spot"]     = spx_spot
-    data["option_chain"] = option_chain
+    data["spx_ohlcv"]          = spx_ohlcv_data
+    data["spx_spot"]           = spx_spot
+    data["option_chain_0dte"]  = chain_0dte
+    data["option_chain_multi"] = chain_multi
     data["fecha"] = vix_data.get("fecha") or str(date.today())
 
     (out / "data.json").write_text(json.dumps(data, indent=2))
     print(f"[fetch] status={data['status']} fecha={data['fecha']} "
           f"vix_history={vix_data['vix_history']['status']} "
           f"spx_ohlcv={spx_ohlcv_data['status']}(bars={spx_ohlcv_data['bars']}) "
-          f"option_chain={option_chain['status']}(n={option_chain['n_contracts']})")
+          f"chain_0dte={chain_0dte['status']}(n={chain_0dte['n_contracts']}) "
+          f"chain_multi={chain_multi['status']}(n={chain_multi['n_contracts']})")
