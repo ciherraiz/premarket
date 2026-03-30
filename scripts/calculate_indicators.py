@@ -205,6 +205,77 @@ def calc_ivr(vix_current: dict, vix_history: dict) -> dict:
     return base
 
 
+def calc_overnight_gap(spx_data: dict, es_data: dict) -> dict:
+    """
+    Calcula el gap entre el precio premarket del ES y el cierre anterior del SPX.
+
+    Tabla de scoring:
+        gap_pct > +0.50%                  →  0  GAP_ALCISTA_GRANDE  (relleno probable)
+        +0.10% ≤ gap_pct ≤ +0.50%        → +1  GAP_ALCISTA
+        -0.10% < gap_pct < +0.10%         →  0  PLANO
+        -0.50% ≤ gap_pct ≤ -0.10%        → -1  GAP_BAJISTA
+        gap_pct < -0.50%                  →  0  GAP_BAJISTA_GRANDE  (relleno probable)
+    """
+    base = {
+        "es_premarket": None,
+        "spx_prev_close": None,
+        "gap_points": None,
+        "gap_pct": None,
+        "score": 0,
+        "signal": None,
+        "status": "OK",
+        "fecha": es_data.get("fecha") or spx_data.get("fecha"),
+    }
+
+    try:
+        es = es_data.get("es_premarket")
+        spx = spx_data.get("spx_prev_close")
+
+        if es is None:
+            base["status"] = "MISSING_DATA"
+            return base
+        if spx is None:
+            base["status"] = "MISSING_DATA"
+            return base
+
+        if es == 0:
+            base["status"] = "ERROR"
+            return base
+        if spx == 0:
+            base["status"] = "ERROR"
+            return base
+
+        base["es_premarket"] = es
+        base["spx_prev_close"] = spx
+
+        gap_points = round(es - spx, 2)
+        gap_pct = round((es - spx) / spx * 100, 4)
+        base["gap_points"] = gap_points
+        base["gap_pct"] = gap_pct
+
+        if gap_pct > 0.50:
+            base["score"] = 0
+            base["signal"] = "GAP_ALCISTA_GRANDE"
+        elif gap_pct >= 0.10:
+            base["score"] = 1
+            base["signal"] = "GAP_ALCISTA"
+        elif gap_pct > -0.10:
+            base["score"] = 0
+            base["signal"] = "PLANO"
+        elif gap_pct >= -0.50:
+            base["score"] = -1
+            base["signal"] = "GAP_BAJISTA"
+        else:
+            base["score"] = 0
+            base["signal"] = "GAP_BAJISTA_GRANDE"
+
+    except Exception:
+        base["status"] = "ERROR"
+        base["score"] = 0
+
+    return base
+
+
 if __name__ == "__main__":
     import json
     from pathlib import Path
@@ -214,8 +285,9 @@ if __name__ == "__main__":
     slope = calc_vix_vxv_slope(data)
     ratio = calc_vix9d_vix_ratio(data)
     ivr   = calc_ivr(data, data.get("vix_history", {}))
+    gap   = calc_overnight_gap(data, data)
 
-    d_score = slope["score"] + ratio["score"]
+    d_score = slope["score"] + ratio["score"] + gap["score"]
     v_score = ivr["score"]
 
     indicators = {
@@ -223,6 +295,7 @@ if __name__ == "__main__":
         "vix_vxv_slope":   slope,
         "vix9d_vix_ratio": ratio,
         "ivr":             ivr,
+        "overnight_gap":   gap,
         "d_score":         d_score,
         "v_score":         v_score,
     }
@@ -230,5 +303,6 @@ if __name__ == "__main__":
     Path("outputs/indicators.json").write_text(json.dumps(indicators, indent=2))
     print(f"[calc] slope={slope['signal']}({slope['score']})  "
           f"ratio={ratio['signal']}({ratio['score']})  "
+          f"gap={gap['signal']}({gap['score']})  "
           f"ivr={ivr['signal']}({ivr['score']})  "
           f"D={d_score}  V={v_score}")
