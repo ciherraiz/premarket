@@ -205,9 +205,10 @@ def calc_ivr(vix_current: dict, vix_history: dict) -> dict:
     return base
 
 
-def calc_overnight_gap(spx_data: dict, es_data: dict) -> dict:
+def calc_overnight_gap(es_prev_data: dict, es_data: dict) -> dict:
     """
-    Calcula el gap entre el precio premarket del ES y el cierre anterior del SPX.
+    Calcula el gap entre el precio premarket del ES y el cierre de la sesión anterior del ES.
+    Compara futuros contra futuros para eliminar el basis con el SPX.
 
     Tabla de scoring:
         gap_pct > +0.50%                  →  0  GAP_ALCISTA_GRANDE  (relleno probable)
@@ -218,38 +219,38 @@ def calc_overnight_gap(spx_data: dict, es_data: dict) -> dict:
     """
     base = {
         "es_premarket": None,
-        "spx_prev_close": None,
+        "es_prev_close": None,
         "gap_points": None,
         "gap_pct": None,
         "score": 0,
         "signal": None,
         "status": "OK",
-        "fecha": es_data.get("fecha") or spx_data.get("fecha"),
+        "fecha": es_data.get("fecha") or es_prev_data.get("fecha"),
     }
 
     try:
         es = es_data.get("es_premarket")
-        spx = spx_data.get("spx_prev_close")
+        es_prev = es_prev_data.get("es_prev_close")
 
         if es is None:
             base["status"] = "MISSING_DATA"
             return base
-        if spx is None:
+        if es_prev is None:
             base["status"] = "MISSING_DATA"
             return base
 
         if es == 0:
             base["status"] = "ERROR"
             return base
-        if spx == 0:
+        if es_prev == 0:
             base["status"] = "ERROR"
             return base
 
         base["es_premarket"] = es
-        base["spx_prev_close"] = spx
+        base["es_prev_close"] = es_prev
 
-        gap_points = round(es - spx, 2)
-        gap_pct = round((es - spx) / spx * 100, 4)
+        gap_points = round(es - es_prev, 2)
+        gap_pct = round((es - es_prev) / es_prev * 100, 4)
         base["gap_points"] = gap_points
         base["gap_pct"] = gap_pct
 

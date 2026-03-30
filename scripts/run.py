@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from fetch_market_data import (
     fetch_vix_term_structure,
     fetch_vix_history,
-    fetch_spx_prev_close,
+    fetch_es_prev_close,
     fetch_es_quote,
 )
 from calculate_indicators import (
@@ -26,12 +26,12 @@ def main():
     # Paso 1: fetch
     data = fetch_vix_term_structure()
     data["vix_history"] = fetch_vix_history()
-    data["spx"]         = fetch_spx_prev_close()
+    data["es_prev"]     = fetch_es_prev_close()
     data["es"]          = fetch_es_quote()
     (out / "data.json").write_text(json.dumps(data, indent=2))
     print(f"[fetch] status={data['status']} fecha={data['fecha']} "
           f"vix_history={data['vix_history']['status']} "
-          f"spx={data['spx']['status']} "
+          f"es_prev={data['es_prev']['status']} "
           f"es={data['es']['status']}")
     if data["status"] != "OK":
         print(f"[ERROR] fetch: status={data['status']}", file=sys.stderr)
@@ -40,7 +40,7 @@ def main():
     # Paso 2: calcular indicadores
     slope = calc_vix_vxv_slope(data)
     ratio = calc_vix9d_vix_ratio(data)
-    gap   = calc_overnight_gap(data.get("spx", {}), data.get("es", {}))
+    gap   = calc_overnight_gap(data.get("es_prev", {}), data.get("es", {}))
     ivr   = calc_ivr(data, data.get("vix_history", {}))
 
     indicators = {

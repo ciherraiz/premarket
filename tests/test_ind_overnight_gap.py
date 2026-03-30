@@ -6,9 +6,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from scripts.calculate_indicators import calc_overnight_gap
 
 
-def _make(es, spx_close):
+def _make(es, es_prev_close):
     return (
-        {"spx_prev_close": spx_close, "fecha": "2026-03-29"},
+        {"es_prev_close": es_prev_close, "fecha": "2026-03-29"},
         {"es_premarket": es, "fecha": "2026-03-29"},
     )
 
@@ -92,22 +92,22 @@ def test_es_precio_none():
     assert result["status"] == "MISSING_DATA"
 
 
-def test_spx_cierre_none():
-    spx, es = _make(5100.0, None)
-    result = calc_overnight_gap(spx, es)
+def test_es_prev_cierre_none():
+    es_prev, es = _make(5100.0, None)
+    result = calc_overnight_gap(es_prev, es)
     assert result["score"] == 0
     assert result["status"] == "MISSING_DATA"
 
 
 def test_es_precio_cero():
-    spx, es = _make(0, 5080.0)
-    result = calc_overnight_gap(spx, es)
+    es_prev, es = _make(0, 5080.0)
+    result = calc_overnight_gap(es_prev, es)
     assert result["score"] == 0
     assert result["status"] == "ERROR"
 
 
-def test_spx_cierre_cero():
-    spx, es = _make(5100.0, 0)
-    result = calc_overnight_gap(spx, es)
+def test_es_prev_cierre_cero():
+    es_prev, es = _make(5100.0, 0)
+    result = calc_overnight_gap(es_prev, es)
     assert result["score"] == 0
     assert result["status"] == "ERROR"
