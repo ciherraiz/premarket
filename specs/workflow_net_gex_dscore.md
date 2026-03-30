@@ -61,35 +61,56 @@ def get_equity_quote(self, streamer_symbol: str) -> dict:
 Sigue el mismo patrón async que `_resolve_and_fetch` en `get_future_quote()`,
 pero sin resolución de contrato: suscribe directamente a `Quote` con el símbolo recibido.
 
-### 1b. `get_option_chain(symbol, expiry)` — cadena de opciones
+### 1b. `get_option_chain(symbol, expiry, max_strikes)` — cadena de opciones
 
-Obtiene la cadena completa de opciones para un símbolo y una fecha de vencimiento.
+Obtiene la cadena de opciones para un símbolo y una fecha de vencimiento,
+limitada a los `max_strikes` strikes más cercanos al ATM.
 
 ```python
-def get_option_chain(self, symbol: str, expiry: str) -> list[dict]:
+def get_option_chain(
+    self,
+    symbol: str,
+    expiry: str,
+    max_strikes: int = 60,
+) -> list[dict]:
     """
     Devuelve la cadena de opciones para (symbol, expiry).
 
     Args:
-        symbol: ej. "SPXW"
-        expiry: fecha en formato "YYYY-MM-DD"
+        symbol:      ej. "SPXW"
+        expiry:      fecha en formato "YYYY-MM-DD"
+        max_strikes: número máximo de strikes a suscribir vía DXLink.
+                     Se seleccionan los más cercanos al ATM (spot actual).
+                     Valor por defecto: 60 (±30 strikes alrededor del ATM).
+                     Rango recomendado: 40–100.
 
     Returns:
         lista de contratos, cada uno con:
         {
-            "strike":       float,
-            "option_type":  str,   # "C" o "P"
-            "expiry":       str,   # "YYYY-MM-DD"
+            "strike":        float,
+            "option_type":   str,   # "C" o "P"
+            "expiry":        str,   # "YYYY-MM-DD"
             "open_interest": int,
-            "gamma":        float | None,
-            "iv":           float | None,   # volatilidad implícita como decimal
+            "gamma":         float | None,
+            "iv":            float | None,  # volatilidad implícita como decimal
         }
         Lista vacía si no hay datos.
     """
 ```
 
-Usa `tastytrade.instruments.NestedOptionChain` para obtener los strikes y contratos,
-y `tastytrade.dxfeed.Greeks` / `Summary` via DXLink para obtener gamma e IV por contrato.
+**Selección de strikes ATM:**
+
+```
+todos_los_strikes = NestedOptionChain → lista de strikes disponibles (con OI > 0)
+strikes_ordenados = sorted(todos_los_strikes, key=lambda s: abs(s - spot_actual))
+strikes_seleccionados = strikes_ordenados[:max_strikes]
+```
+
+Suscribir `Greeks` vía DXLink solo para los `max_strikes` contratos seleccionados
+(calls + puts de cada strike = hasta `max_strikes × 2` suscripciones).
+
+**Justificación:** los strikes muy OTM tienen OI bajo y gamma≈0, por lo que su
+contribución al GEX es despreciable. Limitar a ±30 strikes ATM captura >95% del GEX real.
 
 **Nota:** si el broker no devuelve gamma para un contrato pero devuelve IV, dejar `gamma=None`
 para que `calc_net_gex()` aplique el fallback Black-Scholes.
@@ -126,22 +147,33 @@ de ±0.5% en el spot, así que el cierre de yfinance es aceptable si el SDK fall
 ### 2b. `fetch_option_chain(symbol, days_ahead)` — cadena SPXW
 
 ```python
-def fetch_option_chain(symbol: str = "SPXW", days_ahead: int = 5) -> dict:
+def fetch_option_chain(
+    symbol: str = "SPXW",
+    days_ahead: int = 5,
+    max_strikes: int = 60,
+) -> dict:
     """
-    Obtiene la cadena de opciones para hoy + los próximos days_ahead días naturales.
-    Llama a TastyTradeClient.get_option_chain() por cada fecha de vencimiento.
+    Obtiene la cadena de opciones para hoy + los próximos days_ahead días naturales,
+    limitada a max_strikes strikes ATM por vencimiento.
+
+    Args:
+        symbol:      símbolo de opciones, ej. "SPXW"
+        days_ahead:  número de días naturales adicionales a hoy (default 5)
+        max_strikes: strikes máximos por vencimiento, pasado a get_option_chain()
 
     Returns:
         {
             "contracts":   list[dict],  # todos los contratos de todos los vencimientos
             "expiries":    list[str],   # fechas procesadas, formato YYYY-MM-DD
             "n_contracts": int,
+            "max_strikes": int,         # valor usado, para trazabilidad
             "status":      str,         # "OK" | "ERROR" | "EMPTY_CHAIN"
         }
     """
 ```
 
 Itera sobre `[hoy, hoy+1, hoy+2, ..., hoy+days_ahead]` (días naturales).
+Pasa `max_strikes` a cada llamada `get_option_chain()`.
 Ignora silenciosamente vencimientos sin contratos (fines de semana, no hay 0DTE).
 Si ningún vencimiento devuelve contratos → `status = "EMPTY_CHAIN"`.
 
@@ -150,11 +182,14 @@ Si ningún vencimiento devuelve contratos → `status = "EMPTY_CHAIN"`.
 ```python
 # Añadir tras fetch_spx_ohlcv():
 spx_spot_data   = fetch_spx_spot()
-option_chain    = fetch_option_chain("SPXW", days_ahead=5)
+option_chain    = fetch_option_chain("SPXW", days_ahead=5, max_strikes=GEX_MAX_STRIKES)
 
 data["spx_spot"]      = spx_spot_data.get("spx_spot")
 data["option_chain"]  = option_chain
 ```
+
+`GEX_MAX_STRIKES` se importa de `calculate_indicators` o se define también como constante
+al inicio de `fetch_market_data.py` para no crear dependencia circular. Preferir duplicarla.
 
 El campo `data["spx_spot"]` es un `float | None` directamente (no un dict anidado)
 para simplificar el acceso en `calc_net_gex()`.
@@ -168,6 +203,10 @@ para simplificar el acceso en `calc_net_gex()`.
 ```python
 # --- Umbrales Net GEX (ajustar con datos reales una vez en producción) ---
 GEX_UMBRAL_FUERTE = 2.0   # billions — separa long/short gamma fuerte de suave
+
+# --- Parámetros de la cadena de opciones ---
+GEX_MAX_STRIKES   = 60    # strikes máximos por vencimiento (±30 ATM)
+                          # subir a 100 si se quiere mayor cobertura OTM
 ```
 
 ### 3b. Función privada `_calc_gamma_bs(spot, strike, iv, days_to_exp)`
