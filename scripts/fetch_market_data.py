@@ -96,6 +96,65 @@ def fetch_vix_history() -> dict:
     return result
 
 
+def fetch_spx_ohlcv(period_days: int = 35) -> dict:
+    """
+    Descarga el histórico OHLCV diario del SPX (^GSPC).
+    Necesita al menos 30 barras para calcular el ATR Ratio (dos ventanas de 14 días).
+    Se descargan 35 barras para tener margen ante festivos.
+
+    Returns:
+        {
+            "ohlcv":   list[dict],  # registros con Open, High, Low, Close, Volume, Date
+            "bars":    int,
+            "fecha":   str,         # fecha del último bar, YYYY-MM-DD
+            "status":  str,         # "OK" | "ERROR" | "INSUFFICIENT_DATA"
+        }
+    """
+    result = {
+        "ohlcv": None,
+        "bars": 0,
+        "fecha": None,
+        "status": "OK",
+    }
+
+    try:
+        df = yf.download("^GSPC", period=f"{period_days}d", auto_adjust=True, progress=False)
+
+        if df.empty:
+            result["status"] = "ERROR"
+            return result
+
+        # yfinance devuelve MultiIndex cuando se descarga un único ticker
+        if isinstance(df.columns, __import__("pandas").MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+
+        bars = len(df)
+        result["bars"] = bars
+
+        if bars < 30:
+            result["status"] = "INSUFFICIENT_DATA"
+            return result
+
+        result["fecha"] = str(df.index[-1].date())
+        records = []
+        for idx, row in df.iterrows():
+            records.append({
+                "Date":   str(idx.date()),
+                "Open":   round(float(row["Open"]), 2),
+                "High":   round(float(row["High"]), 2),
+                "Low":    round(float(row["Low"]), 2),
+                "Close":  round(float(row["Close"]), 2),
+                "Volume": int(row["Volume"]),
+            })
+        result["ohlcv"] = records
+
+    except Exception:
+        result["status"] = "ERROR"
+
+    return result
+
+
 def fetch_es_prev_close() -> dict:
     """
     Descarga el cierre de la última sesión completada del futuro ES (ES=F) de yfinance.
@@ -187,10 +246,13 @@ if __name__ == "__main__":
     vix_data["vix_history"] = fetch_vix_history()
     es_prev_data = fetch_es_prev_close()
     es_data = fetch_es_quote()
+    spx_ohlcv_data = fetch_spx_ohlcv()
 
     data = {**vix_data, **es_prev_data, **es_data}
+    data["spx_ohlcv"] = spx_ohlcv_data
     data["fecha"] = vix_data.get("fecha") or str(date.today())
 
     (out / "data.json").write_text(json.dumps(data, indent=2))
     print(f"[fetch] status={data['status']} fecha={data['fecha']} "
-          f"vix_history={vix_data['vix_history']['status']}")
+          f"vix_history={vix_data['vix_history']['status']} "
+          f"spx_ohlcv={spx_ohlcv_data['status']}(bars={spx_ohlcv_data['bars']})")

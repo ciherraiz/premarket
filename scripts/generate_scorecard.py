@@ -4,13 +4,14 @@ from pathlib import Path
 
 def print_scorecard(indicators: dict) -> None:
     fecha = indicators.get("fecha", "N/A")
-    slope = indicators.get("vix_vxv_slope", {})
-    ratio = indicators.get("vix9d_vix_ratio", {})
-    gap   = indicators.get("overnight_gap", {})
-    ivr   = indicators.get("ivr", {})
+    slope     = indicators.get("vix_vxv_slope", {})
+    ratio     = indicators.get("vix9d_vix_ratio", {})
+    gap       = indicators.get("overnight_gap", {})
+    ivr       = indicators.get("ivr", {})
+    atr_ratio = indicators.get("atr_ratio", {})
 
     d_score = indicators.get("d_score", slope.get("score", 0) + ratio.get("score", 0) + gap.get("score", 0))
-    v_score = indicators.get("v_score", ivr.get("score", 0))
+    v_score = indicators.get("v_score", ivr.get("score", 0) + atr_ratio.get("score", 0))
 
     sep  = "=" * 62
     line = "-" * 62
@@ -83,6 +84,17 @@ def print_scorecard(indicators: dict) -> None:
     ivr_score  = ivr.get("score", 0)
     ivr_signal = ivr.get("signal", "N/A")
     print(f"  {'IV Rank (IVR)':<20} {ivr_val:<26} {_sign(ivr_score):<6} {ivr_signal}")
+
+    # ATR Ratio row
+    atr_status = atr_ratio.get("status", "ERROR")
+    if atr_status == "OK":
+        atr_val_num = atr_ratio.get("atr_ratio")
+        atr_val = f"ATR_ratio={atr_val_num}"
+    else:
+        atr_val = f"[{atr_status}]"
+    atr_score  = atr_ratio.get("score", 0)
+    atr_signal = atr_ratio.get("signal", "N/A")
+    print(f"  {'ATR Ratio':<20} {atr_val:<26} {_sign(atr_score):<6} {atr_signal}")
 
     print(line)
     print(f"  V-Score (volatilidad):  {_sign(v_score)}")

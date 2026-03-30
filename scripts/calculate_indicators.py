@@ -277,19 +277,112 @@ def calc_overnight_gap(es_prev_data: dict, es_data: dict) -> dict:
     return base
 
 
+def calc_atr_ratio(spx_ohlcv_data: dict) -> dict:
+    """
+    Calcula el ATR Ratio comparando la volatilidad realizada reciente del SPX
+    con la del periodo anterior para detectar expansión/contracción de rango.
+
+    ATR_actual = media(True Range, días -1 a -14)
+    ATR_lag    = media(True Range, días -15 a -28)
+    ATR_ratio  = ATR_actual / ATR_lag
+
+    Tabla de scoring:
+        ratio < 0.80            → +2  CONTRACCION_FUERTE
+        0.80 ≤ ratio < 0.92     → +1  CONTRACCION_SUAVE
+        0.92 ≤ ratio ≤ 1.08     →  0  NEUTRO
+        1.08 < ratio ≤ 1.20     → -1  EXPANSION_SUAVE
+        ratio > 1.20            → -2  EXPANSION_FUERTE
+    """
+    base = {
+        "atr_actual": None,
+        "atr_lag": None,
+        "atr_ratio": None,
+        "score": 0,
+        "signal": None,
+        "status": "OK",
+        "fecha": None,
+    }
+
+    try:
+        status = spx_ohlcv_data.get("status", "ERROR")
+        if status == "INSUFFICIENT_DATA":
+            base["status"] = "INSUFFICIENT_DATA"
+            return base
+        if status != "OK":
+            base["status"] = "ERROR"
+            return base
+
+        records = spx_ohlcv_data.get("ohlcv")
+        if not records or len(records) < 30:
+            base["status"] = "INSUFFICIENT_DATA"
+            return base
+
+        base["fecha"] = spx_ohlcv_data.get("fecha")
+
+        # Calcular True Range para cada barra (necesita close anterior)
+        tr_list = []
+        for i in range(1, len(records)):
+            high  = records[i]["High"]
+            low   = records[i]["Low"]
+            prev_close = records[i - 1]["Close"]
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            tr_list.append(tr)
+
+        # tr_list[-1] = TR del último día, tr_list[-14] = TR del día -14
+        if len(tr_list) < 28:
+            base["status"] = "INSUFFICIENT_DATA"
+            return base
+
+        atr_actual = sum(tr_list[-14:]) / 14
+        atr_lag    = sum(tr_list[-28:-14]) / 14
+
+        base["atr_actual"] = round(atr_actual, 4)
+        base["atr_lag"]    = round(atr_lag, 4)
+
+        if atr_lag == 0:
+            base["status"] = "ERROR"
+            return base
+
+        ratio = round(atr_actual / atr_lag, 4)
+        base["atr_ratio"] = ratio
+
+        if ratio < 0.80:
+            base["score"] = 2
+            base["signal"] = "CONTRACCION_FUERTE"
+        elif ratio < 0.92:
+            base["score"] = 1
+            base["signal"] = "CONTRACCION_SUAVE"
+        elif ratio <= 1.08:
+            base["score"] = 0
+            base["signal"] = "NEUTRO"
+        elif ratio <= 1.20:
+            base["score"] = -1
+            base["signal"] = "EXPANSION_SUAVE"
+        else:
+            base["score"] = -2
+            base["signal"] = "EXPANSION_FUERTE"
+
+    except Exception:
+        base["status"] = "ERROR"
+        base["score"] = 0
+
+    return base
+
+
 if __name__ == "__main__":
     import json
     from pathlib import Path
 
     data = json.loads(Path("outputs/data.json").read_text())
 
-    slope = calc_vix_vxv_slope(data)
-    ratio = calc_vix9d_vix_ratio(data)
-    ivr   = calc_ivr(data, data.get("vix_history", {}))
-    gap   = calc_overnight_gap(data, data)
+    slope     = calc_vix_vxv_slope(data)
+    ratio     = calc_vix9d_vix_ratio(data)
+    ivr       = calc_ivr(data, data.get("vix_history", {}))
+    gap       = calc_overnight_gap(data, data)
+    atr_ratio = calc_atr_ratio(data.get("spx_ohlcv", {}))
 
     d_score = slope["score"] + ratio["score"] + gap["score"]
-    v_score = ivr["score"]
+    v_score = ivr["score"] + atr_ratio["score"]
 
     indicators = {
         "fecha":           data.get("fecha"),
@@ -297,6 +390,7 @@ if __name__ == "__main__":
         "vix9d_vix_ratio": ratio,
         "ivr":             ivr,
         "overnight_gap":   gap,
+        "atr_ratio":       atr_ratio,
         "d_score":         d_score,
         "v_score":         v_score,
     }
@@ -306,4 +400,5 @@ if __name__ == "__main__":
           f"ratio={ratio['signal']}({ratio['score']})  "
           f"gap={gap['signal']}({gap['score']})  "
           f"ivr={ivr['signal']}({ivr['score']})  "
+          f"atr={atr_ratio['signal']}({atr_ratio['score']})  "
           f"D={d_score}  V={v_score}")
