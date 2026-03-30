@@ -9,6 +9,7 @@ def print_scorecard(indicators: dict) -> None:
     gap       = indicators.get("overnight_gap", {})
     ivr       = indicators.get("ivr", {})
     atr_ratio = indicators.get("atr_ratio", {})
+    net_gex   = indicators.get("net_gex", {})
 
     d_score = indicators.get("d_score", slope.get("score", 0) + ratio.get("score", 0) + gap.get("score", 0))
     v_score = indicators.get("v_score", ivr.get("score", 0) + atr_ratio.get("score", 0))
@@ -63,6 +64,31 @@ def print_scorecard(indicators: dict) -> None:
     gap_score  = gap.get("score", 0)
     gap_signal = gap.get("signal", "N/A")
     print(f"  {'Overnight Gap':<20} {gap_val:<26} {_sign(gap_score):<6} {gap_signal}")
+
+    # Net GEX (IND-03)
+    gex_status = net_gex.get("status", "ERROR")
+    if gex_status == "OK":
+        gex_bn  = net_gex.get("net_gex_bn")
+        gex_val = f"GEX={gex_bn:+.2f}B"
+    else:
+        gex_val = f"[{gex_status}]"
+    gex_score  = net_gex.get("score_gex", 0)
+    gex_signal = net_gex.get("signal_gex", "N/A")
+    print(f"  {'Net GEX':<20} {gex_val:<26} {_sign(gex_score):<6} {gex_signal}")
+
+    # Flip Level (IND-04)
+    flip_status = net_gex.get("status", "ERROR")
+    flip_level  = net_gex.get("flip_level")
+    if flip_status == "OK" and flip_level is not None:
+        spot_val = net_gex.get("spot") or 0
+        flip_val = f"Flip={flip_level:.0f}  Spot={spot_val:.0f}"
+    elif flip_status == "OK":
+        flip_val = "SIN_FLIP"
+    else:
+        flip_val = f"[{flip_status}]"
+    flip_score  = net_gex.get("score_flip", 0)
+    flip_signal = net_gex.get("signal_flip", "N/A")
+    print(f"  {'Flip Level':<20} {flip_val:<26} {_sign(flip_score):<6} {flip_signal}")
 
     print(line)
     print(f"  D-Score (direccional):  {_sign(d_score)}")
