@@ -39,13 +39,17 @@ def main():
     if spx_ohlcv_data.get("ohlcv"):
         spx_spot = spx_ohlcv_data["ohlcv"][-1]["Close"]
 
-    option_chain = fetch_option_chain(
+    chain_0dte  = fetch_option_chain(
+        "SPXW", days_ahead=0, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
+    )
+    chain_multi = fetch_option_chain(
         "SPXW", days_ahead=5, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
     )
 
-    data["spx_ohlcv"]    = spx_ohlcv_data
-    data["spx_spot"]     = spx_spot
-    data["option_chain"] = option_chain
+    data["spx_ohlcv"]          = spx_ohlcv_data
+    data["spx_spot"]           = spx_spot
+    data["option_chain_0dte"]  = chain_0dte
+    data["option_chain_multi"] = chain_multi
 
     (out / "data.json").write_text(json.dumps(data, indent=2))
     print(f"[fetch] status={data['status']} fecha={data['fecha']} "
@@ -53,7 +57,8 @@ def main():
           f"es_prev={data['es_prev']['status']} "
           f"es={data['es']['status']} "
           f"spx_ohlcv={spx_ohlcv_data['status']}(bars={spx_ohlcv_data['bars']}) "
-          f"option_chain={option_chain['status']}(n={option_chain['n_contracts']})")
+          f"chain_0dte={chain_0dte['status']}(n={chain_0dte['n_contracts']}) "
+          f"chain_multi={chain_multi['status']}(n={chain_multi['n_contracts']})")
 
     if data["status"] != "OK":
         print(f"[ERROR] fetch: status={data['status']}", file=sys.stderr)
@@ -66,7 +71,8 @@ def main():
     ivr       = calc_ivr(data, data.get("vix_history", {}))
     atr_ratio = calc_atr_ratio(data.get("spx_ohlcv", {}))
     net_gex   = calc_net_gex(
-        data.get("option_chain", {}),
+        chain_0dte=data.get("option_chain_0dte", {}),
+        chain_multi=data.get("option_chain_multi", {}),
         spot=data.get("spx_spot"),
         fecha=data.get("fecha"),
     )
