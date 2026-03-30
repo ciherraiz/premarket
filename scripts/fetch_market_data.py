@@ -114,7 +114,7 @@ def fetch_spx_prev_close() -> dict:
             result["status"] = "MISSING_DATA"
             return result
 
-        series = df["Close"].dropna()
+        series = df["Close"].squeeze().dropna()
         if series.empty:
             result["status"] = "MISSING_DATA"
             return result

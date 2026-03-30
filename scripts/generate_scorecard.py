@@ -6,9 +6,10 @@ def print_scorecard(indicators: dict) -> None:
     fecha = indicators.get("fecha", "N/A")
     slope = indicators.get("vix_vxv_slope", {})
     ratio = indicators.get("vix9d_vix_ratio", {})
+    gap   = indicators.get("overnight_gap", {})
     ivr   = indicators.get("ivr", {})
 
-    d_score = indicators.get("d_score", slope.get("score", 0) + ratio.get("score", 0))
+    d_score = indicators.get("d_score", slope.get("score", 0) + ratio.get("score", 0) + gap.get("score", 0))
     v_score = indicators.get("v_score", ivr.get("score", 0))
 
     sep  = "=" * 62
@@ -50,6 +51,17 @@ def print_scorecard(indicators: dict) -> None:
     ratio_score  = ratio.get("score", 0)
     ratio_signal = ratio.get("signal", "N/A")
     print(f"  {'VIX9D/VIX Ratio':<20} {ratio_val:<26} {_sign(ratio_score):<6} {ratio_signal}")
+
+    # Overnight Gap row
+    gap_status = gap.get("status", "ERROR")
+    if gap_status == "OK":
+        gap_pct = gap.get("gap_pct")
+        gap_val = f"Gap={gap_pct:+.2f}%"
+    else:
+        gap_val = f"[{gap_status}]"
+    gap_score  = gap.get("score", 0)
+    gap_signal = gap.get("signal", "N/A")
+    print(f"  {'Overnight Gap':<20} {gap_val:<26} {_sign(gap_score):<6} {gap_signal}")
 
     print(line)
     print(f"  D-Score (direccional):  {_sign(d_score)}")

@@ -5,8 +5,8 @@ Encapsula autenticación y acceso a datos de mercado via API REST y streaming
 DXLink. Diseñado para ser llamado desde scripts Python autónomos (sin Claude).
 
 Requiere en .env:
-    TT_USERNAME = usuario de TastyTrade
-    TT_PASSWORD = contraseña de TastyTrade
+    TT_SECRET  = provider/client secret OAuth de TastyTrade
+    TT_REFRESH = refresh token del usuario
 
 Dependencias: tastytrade>=9.0, python-dotenv>=1.0
 """
@@ -31,20 +31,23 @@ class TastyTradeClient:
 
     def __init__(self):
         """
-        Carga credenciales de .env e inicia sesión con TastyTrade.
+        Carga tokens OAuth de .env e inicia sesión con TastyTrade.
+
+        Requiere en .env:
+            TT_SECRET   = provider/client secret de TastyTrade
+            TT_REFRESH  = refresh token del usuario
 
         Raises:
-            EnvironmentError: si TT_USERNAME o TT_PASSWORD no están en .env
-            Exception: si la autenticación con TastyTrade falla
+            EnvironmentError: si TT_SECRET o TT_REFRESH no están en .env
         """
         load_dotenv()
-        username = os.getenv("TT_USERNAME")
-        password = os.getenv("TT_PASSWORD")
-        if not username or not password:
+        secret = os.getenv("TT_SECRET")
+        refresh = os.getenv("TT_REFRESH")
+        if not secret or not refresh:
             raise EnvironmentError(
-                "TT_USERNAME y TT_PASSWORD deben estar definidos en .env"
+                "TT_SECRET y TT_REFRESH deben estar definidos en .env"
             )
-        self.session = Session(username, password)
+        self.session = Session(provider_secret=secret, refresh_token=refresh)
 
     def get_future_quote(self, symbol: str) -> dict:
         """
@@ -77,26 +80,10 @@ class TastyTradeClient:
         }
 
         try:
-            # Resolver contrato front-month activo via REST
-            streamer_symbol = asyncio.run(self._resolve_streamer_symbol(symbol))
-            if not streamer_symbol:
-                return result
-
-            # Obtener quote (bid/ask) via DXLink streaming
-            quote = asyncio.run(self._fetch_quote(streamer_symbol))
-
-            bid = float(quote.bid_price or 0)
-            ask = float(quote.ask_price or 0)
-            mark = round((bid + ask) / 2, 2) if bid and ask else 0.0
-
-            result.update({
-                "symbol": streamer_symbol,
-                "last": 0.0,  # Trade no disponible en premarket
-                "mark": mark,
-                "bid": bid,
-                "ask": ask,
-                "status": "OK",
-            })
+            quote_data = asyncio.run(self._resolve_and_fetch(symbol))
+            if quote_data is None:
+                return result  # MISSING_DATA: no se encontró contrato activo
+            result.update(quote_data)
 
         except EnvironmentError:
             raise  # propagar para que fetch_es_quote() la capture
@@ -109,35 +96,39 @@ class TastyTradeClient:
     # Métodos privados async
     # ------------------------------------------------------------------
 
-    async def _resolve_streamer_symbol(self, product_code: str) -> str | None:
+    async def _resolve_and_fetch(self, product_code: str) -> dict | None:
         """
-        Obtiene el streamer_symbol del contrato front-month activo.
-        Ej: '/ES' → '/ESM5:XCME'
+        Resuelve el contrato front-month y obtiene bid/ask en un solo contexto async.
+        Devuelve None si no hay contrato activo.
         """
-        futures = await Future.get(self.session, product_codes=[product_code])
+        code = product_code.lstrip('/')
+        futures = await Future.get(self.session, product_codes=[code])
         if not futures:
             return None
 
-        # Front-month: active=True y active_month=True
-        front = next(
-            (f for f in futures if f.active and f.active_month),
-            None,
-        )
+        front = next((f for f in futures if f.active and f.active_month), None)
         if front is None:
-            # Fallback: primer contrato activo si no hay active_month marcado
             front = next((f for f in futures if f.active), None)
+        if front is None:
+            return None
 
-        return front.streamer_symbol if front else None
-
-    async def _fetch_quote(self, streamer_symbol: str) -> Quote:
-        """
-        Suscribe al símbolo en DXLink y devuelve la primera Quote recibida.
-        Timeout de 10 segundos para evitar bloqueos.
-        """
+        streamer_symbol = front.streamer_symbol
         async with DXLinkStreamer(self.session) as streamer:
             await streamer.subscribe(Quote, [streamer_symbol])
             quote = await asyncio.wait_for(
                 streamer.get_event(Quote),
                 timeout=10.0,
             )
-            return quote
+
+        bid  = float(quote.bid_price or 0)
+        ask  = float(quote.ask_price or 0)
+        mark = round((bid + ask) / 2, 2) if bid and ask else 0.0
+
+        return {
+            "symbol": streamer_symbol,
+            "last":   0.0,
+            "mark":   mark,
+            "bid":    bid,
+            "ask":    ask,
+            "status": "OK",
+        }
