@@ -1,5 +1,10 @@
 import yfinance as yf
-from datetime import date
+from datetime import date, datetime
+
+try:
+    from tastytrade_client import TastyTradeClient
+except ImportError:
+    TastyTradeClient = None  # SDK no instalado o script ejecutado fuera de scripts/
 
 
 def fetch_vix_term_structure() -> dict:
@@ -91,14 +96,93 @@ def fetch_vix_history() -> dict:
     return result
 
 
+def fetch_spx_prev_close() -> dict:
+    """
+    Descarga el último cierre disponible del SPX (^GSPC) de yfinance.
+    Periodo de 5 días para cubrir festivos.
+    """
+    result = {
+        "spx_prev_close": None,
+        "fecha": str(date.today()),
+        "status": "OK",
+    }
+
+    try:
+        df = yf.download("^GSPC", period="5d", auto_adjust=True, progress=False)
+
+        if df.empty:
+            result["status"] = "MISSING_DATA"
+            return result
+
+        series = df["Close"].dropna()
+        if series.empty:
+            result["status"] = "MISSING_DATA"
+            return result
+
+        result["spx_prev_close"] = round(float(series.iloc[-1]), 2)
+        result["fecha"] = str(series.index[-1].date())
+
+    except Exception:
+        result["status"] = "ERROR"
+        result["spx_prev_close"] = None
+
+    return result
+
+
+def fetch_es_quote() -> dict:
+    """
+    Obtiene el precio actual del futuro /ES via SDK de TastyTrade.
+    Usa mark (bid+ask)/2 como precio premarket, con fallback a last si > 0.
+    Devuelve MISSING_DATA si las credenciales no están configuradas.
+    """
+    result = {
+        "es_premarket": None,
+        "fecha": str(date.today()),
+        "status": "MISSING_DATA",
+    }
+
+    if TastyTradeClient is None:
+        return result  # SDK no disponible
+
+    try:
+        client = TastyTradeClient()
+        quote = client.get_future_quote("/ES")
+
+        if quote["status"] != "OK":
+            result["status"] = quote["status"]
+            return result
+
+        price = quote["last"] or quote["mark"]
+        if not price or price == 0:
+            result["status"] = "ERROR"
+            return result
+
+        result["es_premarket"] = round(float(price), 2)
+        result["status"] = "OK"
+
+    except EnvironmentError:
+        result["status"] = "MISSING_DATA"  # credenciales no configuradas en .env
+    except Exception:
+        result["status"] = "ERROR"
+
+    return result
+
+
 if __name__ == "__main__":
     import json
     from pathlib import Path
 
-    data = fetch_vix_term_structure()
-    data["vix_history"] = fetch_vix_history()
     out = Path("outputs")
     out.mkdir(exist_ok=True)
+
+    vix_data = fetch_vix_term_structure()
+    vix_data["vix_history"] = fetch_vix_history()
+    spx_data = fetch_spx_prev_close()
+    es_data = fetch_es_quote()
+
+    data = {**vix_data, **spx_data, **es_data}
+    data["fecha"] = vix_data.get("fecha") or str(date.today())
+
     (out / "data.json").write_text(json.dumps(data, indent=2))
     print(f"[fetch] status={data['status']} fecha={data['fecha']} "
-          f"vix_history={data['vix_history']['status']}")
+          f"vix_history={vix_data['vix_history']['status']}")
