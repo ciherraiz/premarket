@@ -2,12 +2,11 @@
 Tests para el indicador Net GEX (IND-03 e IND-04).
 
 Cubre:
-  1. Gamma sintética Black-Scholes (_calc_gamma_bs)
-  2. Flip Level — detección y scoring
-  3. Put Wall / Call Wall
-  4. Max Pain (solo 0DTE)
-  5. Scoring del Net GEX (score_gex)
-  6. Casos de error
+  1. Flip Level — detección y scoring
+  2. Put Wall / Call Wall
+  3. Max Pain (solo cadena 0DTE)
+  4. Scoring del Net GEX (score_gex) — umbrales 15B / 5B
+  5. Casos de error
 """
 
 import sys
@@ -38,11 +37,15 @@ def _make_contract(strike, option_type, oi, gamma=None, expiry=TODAY):
 def _make_chain(contracts, status="OK"):
     expiries = list({c["expiry"] for c in contracts})
     return {
-        "contracts": contracts,
-        "expiries": expiries,
+        "contracts":   contracts,
+        "expiries":    expiries,
         "n_contracts": len(contracts),
-        "status": status,
+        "status":      status,
     }
+
+
+def _empty_chain():
+    return {"contracts": [], "expiries": [], "n_contracts": 0, "status": "EMPTY_CHAIN"}
 
 
 # ---------------------------------------------------------------------------
@@ -53,18 +56,16 @@ def _make_chain(contracts, status="OK"):
 def test_flip_level_detectado():
     """
     Puts concentradas en 5100, calls en 5300 → el GEX acumulado cruza de
-    negativo a positivo cerca de 5200 → flip_level = 5200.
+    negativo a positivo → flip_level detectado en 5200 o 5300.
     """
     spot = 5250.0
     contracts = [
-        # Puts con OI alto en 5100 → GEX muy negativo
         _make_contract(5100, "P", oi=5000, gamma=0.002),
-        # Calls con OI alto en 5300 → GEX muy positivo
         _make_contract(5200, "C", oi=1000, gamma=0.001),
         _make_contract(5300, "C", oi=8000, gamma=0.002),
     ]
     chain = _make_chain(contracts)
-    result = calc_net_gex(chain, spot=spot, fecha=TODAY)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
 
     assert result["status"] == "OK"
     assert result["flip_level"] is not None
@@ -72,7 +73,7 @@ def test_flip_level_detectado():
 
 
 def test_flip_level_no_existe_todo_positivo():
-    """Solo calls con GEX positivo → el acumulado nunca cruza a negativo → flip_level=None, score_flip=0"""
+    """Solo calls con GEX positivo → acumulado nunca negativo → flip_level=None, score_flip=0"""
     spot = 5200.0
     contracts = [
         _make_contract(5100, "C", oi=1000, gamma=0.001),
@@ -80,7 +81,7 @@ def test_flip_level_no_existe_todo_positivo():
         _make_contract(5300, "C", oi=1500, gamma=0.001),
     ]
     chain = _make_chain(contracts)
-    result = calc_net_gex(chain, spot=spot, fecha=TODAY)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
 
     assert result["flip_level"] is None
     assert result["score_flip"] == 0
@@ -89,14 +90,14 @@ def test_flip_level_no_existe_todo_positivo():
 
 def test_flip_level_spot_bajo():
     """Flip detectado pero spot < flip_level → score_flip=-2, signal=BAJO_FLIP"""
-    spot = 5100.0  # por debajo del flip
+    spot = 5100.0
     contracts = [
         _make_contract(5000, "P", oi=5000, gamma=0.002),
         _make_contract(5200, "C", oi=8000, gamma=0.002),
         _make_contract(5300, "C", oi=3000, gamma=0.001),
     ]
     chain = _make_chain(contracts)
-    result = calc_net_gex(chain, spot=spot, fecha=TODAY)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
 
     assert result["flip_level"] is not None
     assert result["score_flip"] == -2
@@ -104,45 +105,47 @@ def test_flip_level_spot_bajo():
 
 
 # ---------------------------------------------------------------------------
-# Grupo 3: Put Wall / Call Wall
+# Grupo 2: Put Wall / Call Wall
 # ---------------------------------------------------------------------------
 
 
 def test_put_wall_call_wall():
     """
-    Concentración clara de puts en 5100 y de calls en 5400 →
+    Concentración de puts en 5100 y calls en 5400 →
     put_wall=5100, call_wall=5400.
     """
     spot = 5250.0
     contracts = [
         _make_contract(5100, "P", oi=10000, gamma=0.003),  # put wall
-        _make_contract(5200, "P", oi=1000, gamma=0.001),
-        _make_contract(5200, "C", oi=1000, gamma=0.001),
+        _make_contract(5200, "P", oi=1000,  gamma=0.001),
+        _make_contract(5200, "C", oi=1000,  gamma=0.001),
         _make_contract(5400, "C", oi=10000, gamma=0.003),  # call wall
     ]
     chain = _make_chain(contracts)
-    result = calc_net_gex(chain, spot=spot, fecha=TODAY)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
 
-    assert result["put_wall"] == 5100
+    assert result["put_wall"]  == 5100
     assert result["call_wall"] == 5400
 
 
 # ---------------------------------------------------------------------------
-# Grupo 4: Max Pain
+# Grupo 3: Max Pain
 # ---------------------------------------------------------------------------
 
 
 def test_max_pain_calculado():
     """
-    Cadena 0DTE sencilla con distribución asimétrica — el max pain debe
-    estar en el strike que minimiza el valor intrínseco total.
+    Cadena 0DTE sencilla — el max pain minimiza el valor intrínseco total.
 
     Strikes: 5100C(OI=100), 5200C(OI=200), 5200P(OI=200), 5300P(OI=100)
-    Para precio_final=5200: calls 5100 ITM = 100×100×100=1_000_000
-                             puts 5300 ITM = 100×100×100=1_000_000  → total=2_000_000
-    Para precio_final=5100: calls ITM=0, puts 5200 ITM=100×200×100=2_000_000,
-                             puts 5300 ITM=200×100×100=2_000_000  → total=4_000_000
-    → max_pain debe ser 5200 (mínimo).
+    Para precio_final=5200:
+        calls 5100 ITM → 100×100×100 = 1_000_000
+        puts  5300 ITM → 100×100×100 = 1_000_000  → total=2_000_000
+    Para precio_final=5100:
+        calls ITM=0
+        puts 5200 ITM → 100×200×100=2_000_000
+        puts 5300 ITM → 200×100×100=2_000_000  → total=4_000_000
+    → max_pain = 5200.
     """
     spot = 5200.0
     contracts = [
@@ -152,7 +155,7 @@ def test_max_pain_calculado():
         _make_contract(5300, "P", oi=100, gamma=0.001),
     ]
     chain = _make_chain(contracts)
-    result = calc_net_gex(chain, spot=spot, fecha=TODAY)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
 
     assert result["max_pain"] == 5200
 
@@ -165,13 +168,13 @@ def test_max_pain_un_strike():
         _make_contract(5200, "P", oi=500, gamma=0.001),
     ]
     chain = _make_chain(contracts)
-    result = calc_net_gex(chain, spot=spot, fecha=TODAY)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
 
     assert result["max_pain"] == 5200
 
 
 # ---------------------------------------------------------------------------
-# Grupo 5: Scoring Net GEX
+# Grupo 4: Scoring Net GEX — umbrales 15B (long) / 5B (short)
 # ---------------------------------------------------------------------------
 
 
@@ -181,7 +184,7 @@ def _chain_with_net_gex(target_bn: float, spot: float = 5200.0):
     GEX = gamma × OI × 100 × spot² / 1e9
     Usamos gamma=0.001 fijo, OI calculado para alcanzar el target.
     """
-    factor = 1e9 / (100 * spot**2)
+    factor = 1e9 / (100 * spot ** 2)
     oi = max(1, round(abs(target_bn) * factor / 0.001))
     if target_bn >= 0:
         contracts = [_make_contract(5200, "C", oi=oi, gamma=0.001)]
@@ -191,51 +194,50 @@ def _chain_with_net_gex(target_bn: float, spot: float = 5200.0):
 
 
 def test_score_long_gamma_fuerte():
-    """net_gex > +2B → score_gex=+3, signal=LONG_GAMMA_FUERTE"""
-    chain = _chain_with_net_gex(target_bn=3.0)
-    result = calc_net_gex(chain, spot=5200.0, fecha=TODAY)
-    assert result["score_gex"] == 3
+    """net_gex > +15B → score_gex=+3, signal=LONG_GAMMA_FUERTE"""
+    chain = _chain_with_net_gex(target_bn=20.0)
+    result = calc_net_gex(_empty_chain(), chain, spot=5200.0, fecha=TODAY)
+    assert result["score_gex"]  == 3
     assert result["signal_gex"] == "LONG_GAMMA_FUERTE"
-    assert result["net_gex_bn"] > 2.0
+    assert result["net_gex_bn"] > 15.0
 
 
 def test_score_long_gamma_suave():
-    """0 < net_gex < +2B → score_gex=+1, signal=LONG_GAMMA_SUAVE"""
-    chain = _chain_with_net_gex(target_bn=1.0)
-    result = calc_net_gex(chain, spot=5200.0, fecha=TODAY)
-    assert result["score_gex"] == 1
+    """0 < net_gex < +15B → score_gex=+1, signal=LONG_GAMMA_SUAVE"""
+    chain = _chain_with_net_gex(target_bn=5.0)
+    result = calc_net_gex(_empty_chain(), chain, spot=5200.0, fecha=TODAY)
+    assert result["score_gex"]  == 1
     assert result["signal_gex"] == "LONG_GAMMA_SUAVE"
-    assert 0 < result["net_gex_bn"] <= 2.0
+    assert 0 < result["net_gex_bn"] <= 15.0
 
 
 def test_score_short_gamma_suave():
-    """-2B < net_gex < 0 → score_gex=-1, signal=SHORT_GAMMA_SUAVE"""
-    chain = _chain_with_net_gex(target_bn=-1.0)
-    result = calc_net_gex(chain, spot=5200.0, fecha=TODAY)
-    assert result["score_gex"] == -1
+    """-5B < net_gex < 0 → score_gex=-1, signal=SHORT_GAMMA_SUAVE"""
+    chain = _chain_with_net_gex(target_bn=-2.0)
+    result = calc_net_gex(_empty_chain(), chain, spot=5200.0, fecha=TODAY)
+    assert result["score_gex"]  == -1
     assert result["signal_gex"] == "SHORT_GAMMA_SUAVE"
-    assert -2.0 <= result["net_gex_bn"] < 0
+    assert -5.0 <= result["net_gex_bn"] < 0
 
 
 def test_score_short_gamma_fuerte():
-    """net_gex < -2B → score_gex=-3, signal=SHORT_GAMMA_FUERTE"""
-    chain = _chain_with_net_gex(target_bn=-3.0)
-    result = calc_net_gex(chain, spot=5200.0, fecha=TODAY)
-    assert result["score_gex"] == -3
+    """net_gex < -5B → score_gex=-3, signal=SHORT_GAMMA_FUERTE"""
+    chain = _chain_with_net_gex(target_bn=-8.0)
+    result = calc_net_gex(_empty_chain(), chain, spot=5200.0, fecha=TODAY)
+    assert result["score_gex"]  == -3
     assert result["signal_gex"] == "SHORT_GAMMA_FUERTE"
-    assert result["net_gex_bn"] < -2.0
+    assert result["net_gex_bn"] < -5.0
 
 
 # ---------------------------------------------------------------------------
-# Grupo 6: Casos de error
+# Grupo 5: Casos de error
 # ---------------------------------------------------------------------------
 
 
 def test_cadena_vacia():
-    """Lista de contratos vacía → status=EMPTY_CHAIN, ambos scores=0"""
-    chain = _make_chain([])
-    result = calc_net_gex(chain, spot=5200.0, fecha=TODAY)
-    assert result["status"] == "EMPTY_CHAIN"
+    """Cadena multi vacía → status=EMPTY_CHAIN, ambos scores=0"""
+    result = calc_net_gex(_empty_chain(), _empty_chain(), spot=5200.0, fecha=TODAY)
+    assert result["status"]    == "EMPTY_CHAIN"
     assert result["score_gex"] == 0
     assert result["score_flip"] == 0
 
@@ -244,8 +246,8 @@ def test_spot_none():
     """spot=None → status=MISSING_DATA, ambos scores=0"""
     contracts = [_make_contract(5200, "C", oi=1000, gamma=0.001)]
     chain = _make_chain(contracts)
-    result = calc_net_gex(chain, spot=None, fecha=TODAY)
-    assert result["status"] == "MISSING_DATA"
+    result = calc_net_gex(chain, chain, spot=None, fecha=TODAY)
+    assert result["status"]    == "MISSING_DATA"
     assert result["score_gex"] == 0
     assert result["score_flip"] == 0
 
@@ -257,20 +259,20 @@ def test_sin_gamma():
         _make_contract(5200, "P", oi=1000, gamma=None),
     ]
     chain = _make_chain(contracts)
-    result = calc_net_gex(chain, spot=5200.0, fecha=TODAY)
-    assert result["status"] == "ERROR"
+    result = calc_net_gex(chain, chain, spot=5200.0, fecha=TODAY)
+    assert result["status"]    == "ERROR"
     assert result["score_gex"] == 0
     assert result["score_flip"] == 0
 
 
 def test_error_no_interrumpe_pipeline():
     """Cadena con status=ERROR desde fetch → no lanza excepción, devuelve dict con status"""
-    chain = {"contracts": [], "expiries": [], "n_contracts": 0, "status": "ERROR"}
+    bad_chain = {"contracts": [], "expiries": [], "n_contracts": 0, "status": "ERROR"}
     try:
-        result = calc_net_gex(chain, spot=5200.0, fecha=TODAY)
+        result = calc_net_gex(bad_chain, bad_chain, spot=5200.0, fecha=TODAY)
         assert isinstance(result, dict)
         assert "status" in result
-        assert result["score_gex"] == 0
+        assert result["score_gex"]  == 0
         assert result["score_flip"] == 0
     except Exception as e:
         raise AssertionError(f"calc_net_gex no debe propagar excepciones, pero lanzó: {e}")

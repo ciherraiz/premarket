@@ -1,8 +1,9 @@
 # ---------------------------------------------------------------------------
 # Constantes configurables Net GEX
 # ---------------------------------------------------------------------------
-GEX_UMBRAL_FUERTE = 2.0   # billions — separa long/short gamma fuerte de suave
-GEX_MAX_STRIKES   = 60    # strikes máximos por vencimiento (±30 ATM)
+GEX_UMBRAL_FUERTE   = 15.0   # billions — long gamma fuerte (SPX tiene OI masivo)
+GEX_UMBRAL_NEGATIVO  = 5.0   # billions — short gamma fuerte (valor absoluto)
+GEX_MAX_STRIKES      = 60    # strikes máximos por vencimiento (±30 ATM)
 
 
 def calc_vix_vxv_slope(vix_current: dict) -> dict:
@@ -376,18 +377,16 @@ def calc_atr_ratio(spx_ohlcv_data: dict) -> dict:
     return base
 
 
-def calc_net_gex(chain_data: dict, spot: float, fecha: str) -> dict:
+def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -> dict:
     """
-    Calcula Net GEX, flip level, put/call wall y max pain a partir de la cadena
-    de opciones SPXW.
+    Calcula Net GEX, flip level, put/call wall y max pain.
 
     Args:
-        chain_data: resultado de fetch_option_chain() — dict con "contracts", "status"
-        spot:       precio del SPX (float o None)
-        fecha:      fecha del análisis "YYYY-MM-DD" (usado para max pain 0DTE)
+        chain_0dte:  fetch_option_chain(days_ahead=0) — niveles intraday (flip, walls, max_pain)
+        chain_multi: fetch_option_chain(days_ahead=5) — régimen GEX total (net_gex_bn)
+        spot:        precio del SPX (float o None)
+        fecha:       fecha del análisis "YYYY-MM-DD"
     """
-    from datetime import date as _date
-
     base = {
         "net_gex_bn":  None,
         "score_gex":   0,
@@ -406,15 +405,15 @@ def calc_net_gex(chain_data: dict, spot: float, fecha: str) -> dict:
     }
 
     try:
-        # Validaciones previas
-        chain_status = chain_data.get("status", "ERROR")
-        contracts = chain_data.get("contracts", [])
+        # Validar cadena multi (fuente del régimen GEX)
+        multi_status    = chain_multi.get("status", "ERROR")
+        multi_contracts = chain_multi.get("contracts", [])
 
-        if chain_status in ("EMPTY_CHAIN", "MISSING_DATA") or not contracts:
-            base["status"] = chain_status if chain_status != "OK" else "EMPTY_CHAIN"
+        if multi_status in ("EMPTY_CHAIN", "MISSING_DATA") or not multi_contracts:
+            base["status"] = multi_status if multi_status != "OK" else "EMPTY_CHAIN"
             return base
 
-        if chain_status == "ERROR":
+        if multi_status == "ERROR":
             base["status"] = "ERROR"
             return base
 
@@ -422,107 +421,118 @@ def calc_net_gex(chain_data: dict, spot: float, fecha: str) -> dict:
             base["status"] = "MISSING_DATA"
             return base
 
-        # Calcular GEX por contrato y acumular por strike
-        gex_by_strike      = {}
-        oi_calls_by_strike = {}   # para max pain
-        oi_puts_by_strike  = {}   # para max pain
-        n_with_gamma       = 0
-        expiries_seen      = set()
+        # --- Net GEX total (cadena multi-día) ---
+        gex_all       = {}
+        n_with_gamma  = 0
+        expiries_seen = set()
 
-        for c in contracts:
+        for c in multi_contracts:
             strike = float(c["strike"])
             otype  = c["option_type"]
             oi     = int(c.get("open_interest") or 0)
             gamma  = c.get("gamma")
-            expiry = c.get("expiry", "")
-            expiries_seen.add(expiry)
+            expiries_seen.add(c.get("expiry", ""))
 
-            # Solo procesar contratos con gamma válida del broker
             if not gamma or gamma <= 0:
                 continue
             n_with_gamma += 1
 
-            # GEX del contrato en billions
             sign = 1 if otype == "C" else -1
             gex  = gamma * oi * 100 * spot * spot / 1_000_000_000 * sign
-            gex_by_strike[strike] = gex_by_strike.get(strike, 0.0) + gex
+            gex_all[strike] = gex_all.get(strike, 0.0) + gex
 
-            # Acumular OI para max pain (solo 0DTE = fecha de hoy)
-            if expiry == fecha:
-                if otype == "C":
-                    oi_calls_by_strike[strike] = oi_calls_by_strike.get(strike, 0) + oi
-                else:
-                    oi_puts_by_strike[strike]  = oi_puts_by_strike.get(strike, 0) + oi
-
-        # Verificar que al menos un contrato aportó gamma
         if n_with_gamma == 0:
             base["status"] = "ERROR"
             return base
 
-        # Net GEX total
-        net_gex_bn = sum(gex_by_strike.values())
+        net_gex_bn = sum(gex_all.values())
         base["net_gex_bn"] = round(net_gex_bn, 4)
-        base["n_strikes"]  = len(gex_by_strike)
         base["n_expiries"] = len(expiries_seen)
 
-        # Score GEX (IND-03)
+        # Score GEX (IND-03) — umbrales asimétricos calibrados al OI del SPX
         if net_gex_bn > GEX_UMBRAL_FUERTE:
             base["score_gex"]  = 3
             base["signal_gex"] = "LONG_GAMMA_FUERTE"
         elif net_gex_bn > 0:
             base["score_gex"]  = 1
             base["signal_gex"] = "LONG_GAMMA_SUAVE"
-        elif net_gex_bn >= -GEX_UMBRAL_FUERTE:
+        elif net_gex_bn >= -GEX_UMBRAL_NEGATIVO:
             base["score_gex"]  = -1
             base["signal_gex"] = "SHORT_GAMMA_SUAVE"
         else:
             base["score_gex"]  = -3
             base["signal_gex"] = "SHORT_GAMMA_FUERTE"
 
-        # Put Wall / Call Wall
-        if gex_by_strike:
-            base["put_wall"]  = min(gex_by_strike, key=gex_by_strike.get)
-            base["call_wall"] = max(gex_by_strike, key=gex_by_strike.get)
+        # --- Niveles intraday (cadena 0DTE) ---
+        dte_contracts = chain_0dte.get("contracts", [])
+        gex_0dte  = {}
+        oi_calls  = {}
+        oi_puts   = {}
 
-        # Flip Level (IND-04)
-        strikes_sorted = sorted(gex_by_strike.keys())
-        cumsum = 0.0
-        started_negative = False
-        flip_level = None
-        for s in strikes_sorted:
-            cumsum += gex_by_strike[s]
-            if cumsum < 0:
-                started_negative = True
-            if started_negative and cumsum >= 0:
-                flip_level = s
-                break
+        for c in dte_contracts:
+            strike = float(c["strike"])
+            otype  = c["option_type"]
+            oi     = int(c.get("open_interest") or 0)
+            gamma  = c.get("gamma")
 
-        base["flip_level"] = flip_level
-        if flip_level is None:
-            base["score_flip"]  = 0
-            base["signal_flip"] = "SIN_FLIP"
-        elif spot > flip_level:
-            base["score_flip"]  = 2
-            base["signal_flip"] = "SOBRE_FLIP"
-        else:
-            base["score_flip"]  = -2
-            base["signal_flip"] = "BAJO_FLIP"
+            if not gamma or gamma <= 0:
+                continue
 
-        # Max Pain (solo 0DTE)
-        all_pain_strikes = set(oi_calls_by_strike) | set(oi_puts_by_strike)
+            sign = 1 if otype == "C" else -1
+            gex  = gamma * oi * 100 * spot * spot / 1_000_000_000 * sign
+            gex_0dte[strike] = gex_0dte.get(strike, 0.0) + gex
+
+            if otype == "C":
+                oi_calls[strike] = oi_calls.get(strike, 0) + oi
+            else:
+                oi_puts[strike]  = oi_puts.get(strike, 0) + oi
+
+        base["n_strikes"] = len(gex_0dte)
+
+        if gex_0dte:
+            # Put Wall / Call Wall
+            base["put_wall"]  = min(gex_0dte, key=gex_0dte.get)
+            base["call_wall"] = max(gex_0dte, key=gex_0dte.get)
+
+            # Flip Level (IND-04)
+            strikes_sorted   = sorted(gex_0dte.keys())
+            cumsum           = 0.0
+            started_negative = False
+            flip_level       = None
+            for s in strikes_sorted:
+                cumsum += gex_0dte[s]
+                if cumsum < 0:
+                    started_negative = True
+                if started_negative and cumsum >= 0:
+                    flip_level = s
+                    break
+
+            base["flip_level"] = flip_level
+            if flip_level is None:
+                base["score_flip"]  = 0
+                base["signal_flip"] = "SIN_FLIP"
+            elif spot > flip_level:
+                base["score_flip"]  = 2
+                base["signal_flip"] = "SOBRE_FLIP"
+            else:
+                base["score_flip"]  = -2
+                base["signal_flip"] = "BAJO_FLIP"
+
+        # Max Pain (cadena 0DTE)
+        all_pain_strikes = set(oi_calls) | set(oi_puts)
         if all_pain_strikes:
-            min_pain = None
+            min_pain        = None
             max_pain_strike = None
             for candidate in sorted(all_pain_strikes):
                 pain = sum(
                     max(candidate - s, 0) * oi * 100
-                    for s, oi in oi_puts_by_strike.items()
+                    for s, oi in oi_puts.items()
                 ) + sum(
                     max(s - candidate, 0) * oi * 100
-                    for s, oi in oi_calls_by_strike.items()
+                    for s, oi in oi_calls.items()
                 )
                 if min_pain is None or pain < min_pain:
-                    min_pain = pain
+                    min_pain        = pain
                     max_pain_strike = candidate
             base["max_pain"] = max_pain_strike
 
@@ -546,7 +556,8 @@ if __name__ == "__main__":
     gap       = calc_overnight_gap(data, data)
     atr_ratio = calc_atr_ratio(data.get("spx_ohlcv", {}))
     net_gex   = calc_net_gex(
-        data.get("option_chain", {}),
+        chain_0dte=data.get("option_chain_0dte", {}),
+        chain_multi=data.get("option_chain_multi", {}),
         spot=data.get("spx_spot"),
         fecha=data.get("fecha"),
     )
