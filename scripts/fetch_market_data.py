@@ -96,19 +96,20 @@ def fetch_vix_history() -> dict:
     return result
 
 
-def fetch_spx_prev_close() -> dict:
+def fetch_es_prev_close() -> dict:
     """
-    Descarga el último cierre disponible del SPX (^GSPC) de yfinance.
+    Descarga el cierre de la última sesión completada del futuro ES (ES=F) de yfinance.
+    Excluye el día actual para garantizar que es un cierre definitivo, no intraday.
     Periodo de 5 días para cubrir festivos.
     """
     result = {
-        "spx_prev_close": None,
+        "es_prev_close": None,
         "fecha": str(date.today()),
         "status": "OK",
     }
 
     try:
-        df = yf.download("^GSPC", period="5d", auto_adjust=True, progress=False)
+        df = yf.download("ES=F", period="5d", auto_adjust=True, progress=False)
 
         if df.empty:
             result["status"] = "MISSING_DATA"
@@ -119,12 +120,19 @@ def fetch_spx_prev_close() -> dict:
             result["status"] = "MISSING_DATA"
             return result
 
-        result["spx_prev_close"] = round(float(series.iloc[-1]), 2)
+        # Excluir el día actual — solo cierres de sesiones completadas
+        today = date.today()
+        series = series[series.index.date < today]
+        if series.empty:
+            result["status"] = "MISSING_DATA"
+            return result
+
+        result["es_prev_close"] = round(float(series.iloc[-1]), 2)
         result["fecha"] = str(series.index[-1].date())
 
     except Exception:
         result["status"] = "ERROR"
-        result["spx_prev_close"] = None
+        result["es_prev_close"] = None
 
     return result
 
@@ -177,10 +185,10 @@ if __name__ == "__main__":
 
     vix_data = fetch_vix_term_structure()
     vix_data["vix_history"] = fetch_vix_history()
-    spx_data = fetch_spx_prev_close()
+    es_prev_data = fetch_es_prev_close()
     es_data = fetch_es_quote()
 
-    data = {**vix_data, **spx_data, **es_data}
+    data = {**vix_data, **es_prev_data, **es_data}
     data["fecha"] = vix_data.get("fecha") or str(date.today())
 
     (out / "data.json").write_text(json.dumps(data, indent=2))
