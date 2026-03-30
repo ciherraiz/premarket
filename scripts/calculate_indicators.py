@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # Constantes configurables Net GEX
 # ---------------------------------------------------------------------------
-GEX_UMBRAL_FUERTE   = 15.0   # billions — long gamma fuerte (SPX tiene OI masivo)
+GEX_UMBRAL_FUERTE   = 5.0    # billions — long gamma fuerte (calibrado con datos reales)
 GEX_UMBRAL_NEGATIVO  = 5.0   # billions — short gamma fuerte (valor absoluto)
 GEX_MAX_STRIKES      = 60    # strikes máximos por vencimiento (±30 ATM)
 
@@ -438,7 +438,7 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
             n_with_gamma += 1
 
             sign = 1 if otype == "C" else -1
-            gex  = gamma * oi * 100 * spot * spot / 1_000_000_000 * sign
+            gex  = gamma * oi * spot * spot / 1_000_000_000 * sign
             gex_all[strike] = gex_all.get(strike, 0.0) + gex
 
         if n_with_gamma == 0:
@@ -479,7 +479,7 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
                 continue
 
             sign = 1 if otype == "C" else -1
-            gex  = gamma * oi * 100 * spot * spot / 1_000_000_000 * sign
+            gex  = gamma * oi * spot * spot / 1_000_000_000 * sign
             gex_0dte[strike] = gex_0dte.get(strike, 0.0) + gex
 
             if otype == "C":
