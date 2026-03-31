@@ -257,8 +257,17 @@ def print_combined_scorecard(
             if isinstance(ind, dict):
                 score  = ind.get("score", 0)
                 signal = ind.get("signal", "N/A")
-                value  = ind.get("value", "")
-                print(f"  {key:<20} {str(value):<26} {_sign(score):<6} {signal}")
+                raw    = ind.get("value", "")
+                # Formatear el valor numérico con unidad si está disponible
+                if isinstance(raw, float):
+                    vwap_level = ind.get("vwap")
+                    if vwap_level is not None:
+                        value = f"Dist={raw:+.4f}%  VWAP={vwap_level}"
+                    else:
+                        value = f"{raw:+.4f}%"
+                else:
+                    value = str(raw)
+                print(f"  {key:<20} {value:<26} {_sign(score):<6} {signal}")
     else:
         print(f"  {'(pendiente)':<20} {'—':<26} {'0':<6} —")
 
@@ -283,15 +292,21 @@ def print_combined_scorecard(
 
 
 def _interpret(d_score: int, v_score: int) -> tuple[str, str]:
-    """Tabla de decisión provisional (pendiente de calibración con datos reales)."""
+    """Tabla de decisión provisional (pendiente de calibración con datos reales).
+
+    Para credit spreads 0DTE:
+    - Bajista → vender CALL spread OTM (calls por encima de un mercado que cae)
+    - Alcista → vender PUT spread OTM (puts por debajo de un mercado que sube)
+    - Rango   → iron condor (ambos lados)
+    """
     if d_score >= 5:
         if v_score >= 3:
-            return "Tendencia alcista + vol alta", "Call spread OTM agresivo"
-        return "Tendencia alcista + vol baja", "Call spread OTM conservador"
+            return "Tendencia alcista + vol alta", "Put spread OTM agresivo"
+        return "Tendencia alcista + vol baja", "Put spread OTM conservador"
     elif d_score <= -5:
         if v_score >= 3:
-            return "Tendencia bajista + vol alta", "Put spread OTM agresivo"
-        return "Tendencia bajista + vol baja", "Put spread OTM conservador"
+            return "Tendencia bajista + vol alta", "Call spread OTM agresivo"
+        return "Tendencia bajista + vol baja", "Call spread OTM conservador"
     else:
         if v_score >= 3:
             return "Rango + vol alta", "Iron condor amplio"
