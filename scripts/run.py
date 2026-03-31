@@ -24,7 +24,7 @@ from calculate_indicators import (
     calc_vix9d_vix_ratio,
     calc_vix_vxv_slope,
 )
-from calculate_open_indicators import calc_vwap_position, calc_vix_delta_open, calc_range_expansion
+from calculate_open_indicators import calc_vwap_position, calc_vix_delta_open, calc_range_expansion, calc_gap_behavior
 from generate_scorecard import print_combined_scorecard, print_scorecard
 
 
@@ -100,6 +100,7 @@ def run_premarket_phase(out: Path) -> dict:
         "net_gex":         net_gex,
         "d_score":         d_score,
         "v_score":         v_score,
+        "spx_prev_close":  spx_spot,   # cierre anterior — necesario para IND-OPEN-05
     }
 
     # Guardar indicators.json con namespace
@@ -156,17 +157,19 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
     vwap      = calc_vwap_position(intraday)
     vix_delta = calc_vix_delta_open(vix_intraday)
 
-    # Dependencia inter-fase: leer VIX del premarket para range expansion
+    # Dependencia inter-fase: leer premarket para range expansion y gap behavior
     premarket_ind = _read_json(out / "indicators.json").get("premarket", {})
     range_exp     = calc_range_expansion(intraday, premarket_ind)
+    gap_beh       = calc_gap_behavior(intraday, premarket_ind)
 
-    d_score_open = vwap["score"]
+    d_score_open = vwap["score"] + gap_beh["score"]
     v_score_open = vix_delta["score"] + range_exp["score"]
 
     open_indicators = {
         "vwap_position":   vwap,
         "vix_delta_open":  vix_delta,
         "range_expansion": range_exp,
+        "gap_behavior":    gap_beh,
         "d_score":         d_score_open,
         "v_score":         v_score_open,
         "window_minutes":  window_minutes,
@@ -178,6 +181,7 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
     (out / "indicators.json").write_text(json.dumps(existing_ind, indent=2))
 
     print(f"[calc-open] vwap={vwap['signal']}({vwap['score']})  "
+          f"gap_beh={gap_beh['signal']}({gap_beh['score']})  "
           f"vix_delta={vix_delta['signal']}({vix_delta['score']})  "
           f"range_exp={range_exp['signal']}({range_exp['score']})  "
           f"D={d_score_open}  V={v_score_open}")

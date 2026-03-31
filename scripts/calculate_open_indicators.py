@@ -14,6 +14,10 @@ RANGE_EXPANSION_HIGH     = 1.2    # ratio > → EXPANSION_ALTA → score -1
 RANGE_EXP_WINDOW_MINUTES = 30     # ventana esperada (para detección de incompletos)
 TRADING_MINUTES_DAY      = 390    # minutos de una jornada completa de trading
 
+GAP_MIN_PCT      = 0.15   # % mínimo de gap para considerarlo significativo
+GAP_MANTIENE_PCT = 25.0   # fill < 25 % → gap mantenido (momentum genuino)
+GAP_NEUTRO_PCT   = 75.0   # fill >= 75 % → gap rellenado (señal neutralizada)
+
 
 # ---------------------------------------------------------------------------
 # IND-OPEN-01: VWAP Position
@@ -279,5 +283,130 @@ def calc_range_expansion(spx_intraday: dict, premarket_indicators: dict) -> dict
         base["score"]  = -1
         base["signal"] = "EXPANSION_ALTA"
     # else: score=0, signal="NEUTRO" (ya en base)
+
+    return base
+
+
+# ---------------------------------------------------------------------------
+# IND-OPEN-05: Gap Behavior
+# ---------------------------------------------------------------------------
+
+def calc_gap_behavior(spx_intraday: dict, premarket_indicators: dict) -> dict:
+    """
+    Mide si el gap de apertura del SPX se está manteniendo o rellenando
+    durante la ventana post-open.
+
+    Fórmulas:
+        gap_pts      = open_price - prev_close
+        gap_pct      = gap_pts / prev_close * 100
+        gap_fill_pct = (open_price - last_close) / gap_pts * 100
+
+    Scoring (según dirección del gap):
+        UP gap:   fill < 25 % → +2 GAP_ALCISTA_MANTENIDO
+                  25 ≤ fill < 75 % → +1 GAP_ALCISTA_PARCIAL
+                  fill >= 75 % → 0 GAP_ALCISTA_RELLENO
+        DOWN gap: fill < 25 % → -2 GAP_BAJISTA_MANTENIDO
+                  25 ≤ fill < 75 % → -1 GAP_BAJISTA_PARCIAL
+                  fill >= 75 % → 0 GAP_BAJISTA_RELLENO
+        |gap_pct| < 0.15 % → 0 GAP_INSIGNIFICANTE
+
+    Dependencia inter-fase: requiere spx_prev_close en premarket_indicators.
+
+    Input:
+        spx_intraday        — dict de fetch_spx_intraday()
+        premarket_indicators — sección "premarket" de indicators.json
+    Output: dict con score, signal, gap_pct, gap_fill_pct, gap_direction, status
+    """
+    base = {
+        "prev_close":    None,
+        "open_price":    None,
+        "last_close":    None,
+        "gap_pct":       None,
+        "gap_fill_pct":  None,
+        "gap_direction": None,
+        "value":         None,
+        "candles_used":  0,
+        "score":         0,
+        "signal":        "NEUTRO",
+        "status":        "OK",
+        "fecha":         spx_intraday.get("fecha"),
+    }
+
+    # Validar prev_close (dependencia inter-fase)
+    prev_close = (premarket_indicators or {}).get("spx_prev_close")
+    if not prev_close:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_PREV_CLOSE_NO_DISPONIBLE"
+        return base
+
+    # Propagar error del fetch
+    if spx_intraday.get("status") != "OK":
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_FETCH"
+        return base
+
+    records = spx_intraday.get("ohlcv") or []
+    if not records:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_SIN_DATOS"
+        return base
+
+    open_price = spx_intraday.get("open_price")
+    if open_price is None:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_OPEN_PRICE_NULO"
+        return base
+
+    df = pd.DataFrame(records)
+    if "Close" not in df.columns:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_COLUMNAS"
+        return base
+
+    last_close = float(df["Close"].iloc[-1])
+    n = len(df)
+    base["candles_used"] = n
+    base["prev_close"]   = float(prev_close)
+    base["open_price"]   = float(open_price)
+    base["last_close"]   = round(last_close, 2)
+
+    # Calcular gap
+    gap_pts = float(open_price) - float(prev_close)
+    gap_pct = gap_pts / float(prev_close) * 100
+    base["gap_pct"] = round(gap_pct, 4)
+    base["value"]   = round(gap_pct, 4)
+
+    # Gap insignificante → ruido
+    if abs(gap_pct) < GAP_MIN_PCT:
+        base["gap_direction"] = "NONE"
+        base["signal"]        = "GAP_INSIGNIFICANTE"
+        return base
+
+    # Calcular relleno
+    gap_fill_pct = (float(open_price) - last_close) / gap_pts * 100
+    base["gap_fill_pct"] = round(gap_fill_pct, 4)
+
+    if gap_pts > 0:
+        base["gap_direction"] = "UP"
+        if gap_fill_pct < GAP_MANTIENE_PCT:
+            base["score"]  = 2
+            base["signal"] = "GAP_ALCISTA_MANTENIDO"
+        elif gap_fill_pct < GAP_NEUTRO_PCT:
+            base["score"]  = 1
+            base["signal"] = "GAP_ALCISTA_PARCIAL"
+        else:
+            base["score"]  = 0
+            base["signal"] = "GAP_ALCISTA_RELLENO"
+    else:
+        base["gap_direction"] = "DOWN"
+        if gap_fill_pct < GAP_MANTIENE_PCT:
+            base["score"]  = -2
+            base["signal"] = "GAP_BAJISTA_MANTENIDO"
+        elif gap_fill_pct < GAP_NEUTRO_PCT:
+            base["score"]  = -1
+            base["signal"] = "GAP_BAJISTA_PARCIAL"
+        else:
+            base["score"]  = 0
+            base["signal"] = "GAP_BAJISTA_RELLENO"
 
     return base
