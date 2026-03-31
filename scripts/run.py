@@ -13,6 +13,7 @@ from fetch_market_data import (
     fetch_spx_intraday,
     fetch_spx_ohlcv,
     fetch_vix_history,
+    fetch_vix_intraday,
     fetch_vix_term_structure,
 )
 from calculate_indicators import (
@@ -23,7 +24,7 @@ from calculate_indicators import (
     calc_vix9d_vix_ratio,
     calc_vix_vxv_slope,
 )
-from calculate_open_indicators import calc_vwap_position
+from calculate_open_indicators import calc_vwap_position, calc_vix_delta_open
 from generate_scorecard import print_combined_scorecard, print_scorecard
 
 
@@ -122,7 +123,8 @@ def run_premarket_phase(out: Path) -> dict:
 def run_open_phase(out: Path, window_minutes: int) -> dict:
     """Fetch intraday y cálculo de indicadores open phase. Devuelve el dict de indicadores."""
     # Paso 1: fetch intraday
-    intraday = fetch_spx_intraday(window_minutes)
+    intraday     = fetch_spx_intraday(window_minutes)
+    vix_intraday = fetch_vix_intraday(window_minutes)
 
     spx_spot = None
     if intraday.get("ohlcv"):
@@ -146,17 +148,20 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
     (out / "data.json").write_text(json.dumps(existing_data, indent=2))
 
     print(f"[fetch-open] intraday={intraday['status']}(bars={intraday['bars']}) "
+          f"vix_intraday={vix_intraday['status']}(bars={vix_intraday['bars']}) "
           f"es={es_quote['status']} "
           f"chain_0dte={chain_0dte['status']}(n={chain_0dte['n_contracts']})")
 
     # Paso 2: calcular indicadores open
-    vwap = calc_vwap_position(intraday)
+    vwap      = calc_vwap_position(intraday)
+    vix_delta = calc_vix_delta_open(vix_intraday)
 
     d_score_open = vwap["score"]
-    v_score_open = 0
+    v_score_open = vix_delta["score"]
 
     open_indicators = {
         "vwap_position":  vwap,
+        "vix_delta_open": vix_delta,
         "d_score":        d_score_open,
         "v_score":        v_score_open,
         "window_minutes": window_minutes,
@@ -167,7 +172,9 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
     existing_ind["open"] = open_indicators
     (out / "indicators.json").write_text(json.dumps(existing_ind, indent=2))
 
-    print(f"[calc-open] vwap={vwap['signal']}({vwap['score']})  D={d_score_open}  V={v_score_open}")
+    print(f"[calc-open] vwap={vwap['signal']}({vwap['score']})  "
+          f"vix_delta={vix_delta['signal']}({vix_delta['score']})  "
+          f"D={d_score_open}  V={v_score_open}")
 
     return open_indicators
 
