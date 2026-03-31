@@ -24,7 +24,7 @@ from calculate_indicators import (
     calc_vix9d_vix_ratio,
     calc_vix_vxv_slope,
 )
-from calculate_open_indicators import calc_vwap_position, calc_vix_delta_open
+from calculate_open_indicators import calc_vwap_position, calc_vix_delta_open, calc_range_expansion
 from generate_scorecard import print_combined_scorecard, print_scorecard
 
 
@@ -156,15 +156,20 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
     vwap      = calc_vwap_position(intraday)
     vix_delta = calc_vix_delta_open(vix_intraday)
 
+    # Dependencia inter-fase: leer VIX del premarket para range expansion
+    premarket_ind = _read_json(out / "indicators.json").get("premarket", {})
+    range_exp     = calc_range_expansion(intraday, premarket_ind)
+
     d_score_open = vwap["score"]
-    v_score_open = vix_delta["score"]
+    v_score_open = vix_delta["score"] + range_exp["score"]
 
     open_indicators = {
-        "vwap_position":  vwap,
-        "vix_delta_open": vix_delta,
-        "d_score":        d_score_open,
-        "v_score":        v_score_open,
-        "window_minutes": window_minutes,
+        "vwap_position":   vwap,
+        "vix_delta_open":  vix_delta,
+        "range_expansion": range_exp,
+        "d_score":         d_score_open,
+        "v_score":         v_score_open,
+        "window_minutes":  window_minutes,
     }
 
     # Actualizar indicators.json con sección open
@@ -174,6 +179,7 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
 
     print(f"[calc-open] vwap={vwap['signal']}({vwap['score']})  "
           f"vix_delta={vix_delta['signal']}({vix_delta['score']})  "
+          f"range_exp={range_exp['signal']}({range_exp['score']})  "
           f"D={d_score_open}  V={v_score_open}")
 
     return open_indicators
