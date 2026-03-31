@@ -244,6 +244,87 @@ def fetch_spx_intraday(window_minutes: int = 30) -> dict:
     return result
 
 
+def fetch_vix_intraday(window_minutes: int = 30) -> dict:
+    """
+    Descarga barras de 1 minuto del VIX (^VIX) para la sesión actual.
+    Filtra desde las 09:30 ET y devuelve las primeras window_minutes barras.
+    No incluye Volume (el VIX es un índice sintético, Volume=0 en yfinance).
+
+    Returns:
+        {
+            "ohlcv":          list[dict],  # Datetime, Open, High, Low, Close
+            "bars":           int,
+            "window_minutes": int,
+            "vix_open":       float | None,  # Open de la primera barra (09:30 ET)
+            "vix_close":      float | None,  # Close de la última barra (fin ventana)
+            "fecha":          str,
+            "status":         str,   # "OK" | "INSUFFICIENT_DATA" | "ERROR"
+        }
+    """
+    result = {
+        "ohlcv":          None,
+        "bars":           0,
+        "window_minutes": window_minutes,
+        "vix_open":       None,
+        "vix_close":      None,
+        "fecha":          str(date.today()),
+        "status":         "OK",
+    }
+
+    try:
+        df = yf.download("^VIX", period="1d", interval="1m",
+                         prepost=False, auto_adjust=True, progress=False)
+
+        if df.empty:
+            result["status"] = "INSUFFICIENT_DATA"
+            return result
+
+        import pandas as pd
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df = df[["Open", "High", "Low", "Close"]].dropna()
+
+        et = ZoneInfo("America/New_York")
+        df.index = df.index.tz_convert(et)
+        open_time = time(9, 30)
+        df = df[df.index.time >= open_time]
+
+        today = date.today()
+        df = df[df.index.date == today]
+
+        df = df.head(window_minutes)
+
+        bars = len(df)
+        result["bars"] = bars
+
+        if bars == 0:
+            result["status"] = "INSUFFICIENT_DATA"
+            return result
+
+        result["fecha"] = str(df.index[-1].date())
+
+        records = []
+        for idx, row in df.iterrows():
+            records.append({
+                "Datetime": str(idx),
+                "Open":  round(float(row["Open"]),  2),
+                "High":  round(float(row["High"]),  2),
+                "Low":   round(float(row["Low"]),   2),
+                "Close": round(float(row["Close"]), 2),
+            })
+        result["ohlcv"]     = records
+        result["vix_open"]  = records[0]["Open"]
+        result["vix_close"] = records[-1]["Close"]
+
+        if bars < window_minutes:
+            result["status"] = "INSUFFICIENT_DATA"
+
+    except Exception:
+        result["status"] = "ERROR"
+
+    return result
+
+
 def fetch_es_prev_close() -> dict:
     """
     Descarga el cierre de la última sesión completada del futuro ES (ES=F) de yfinance.

@@ -244,21 +244,23 @@ def print_combined_scorecard(
     d_open = open_phase.get("d_score", 0)
     v_open = open_phase.get("v_score", 0)
 
-    open_ind_keys = [k for k in open_phase
-                     if k not in ("d_score", "v_score", "window_minutes", "fecha")]
+    # Indicadores D-Score open (sólo vwap_position por ahora)
+    D_SCORE_OPEN_KEYS = {"vwap_position"}
+    # Indicadores V-Score open
+    V_SCORE_OPEN_KEYS = {"vix_delta_open"}
 
     print(f"  [OPEN PHASE — D-SCORE]  (primeros {window_minutes} min)")
     print(f"  {'Indicador':<20} {'Valor':<26} {'Score':<6} Signal")
     print(line)
 
-    if open_ind_keys:
-        for key in open_ind_keys:
+    d_open_keys = [k for k in open_phase if k in D_SCORE_OPEN_KEYS]
+    if d_open_keys:
+        for key in d_open_keys:
             ind = open_phase[key]
             if isinstance(ind, dict):
                 score  = ind.get("score", 0)
                 signal = ind.get("signal", "N/A")
                 raw    = ind.get("value", "")
-                # Formatear el valor numérico con unidad si está disponible
                 if isinstance(raw, float):
                     vwap_level = ind.get("vwap")
                     if vwap_level is not None:
@@ -273,6 +275,30 @@ def print_combined_scorecard(
 
     print(line)
     print(f"  D-Score open:  {_sign(d_open)}")
+    print()
+
+    print(f"  [OPEN PHASE — V-SCORE]  (primeros {window_minutes} min)")
+    print(f"  {'Indicador':<20} {'Valor':<26} {'Score':<6} Signal")
+    print(line)
+
+    v_open_keys = [k for k in open_phase if k in V_SCORE_OPEN_KEYS]
+    if v_open_keys:
+        for key in v_open_keys:
+            ind = open_phase[key]
+            if isinstance(ind, dict):
+                score  = ind.get("score", 0)
+                signal = ind.get("signal", "N/A")
+                if ind.get("status") == "OK":
+                    delta = ind.get("vix_delta")
+                    value = f"VIX_Δ={delta:+.2f}" if delta is not None else "—"
+                else:
+                    value = f"[{ind.get('status','ERROR')}]"
+                print(f"  {'VIX Delta Open':<20} {value:<26} {_sign(score):<6} {signal}")
+    else:
+        print(f"  {'(pendiente)':<20} {'—':<26} {'0':<6} —")
+
+    print(line)
+    print(f"  V-Score open:  {_sign(v_open)}")
     print()
 
     # --- Totales y decisión ---
