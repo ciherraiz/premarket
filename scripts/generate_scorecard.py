@@ -292,15 +292,21 @@ def print_combined_scorecard(
 
 
 def _interpret(d_score: int, v_score: int) -> tuple[str, str]:
-    """Tabla de decisión provisional (pendiente de calibración con datos reales)."""
+    """Tabla de decisión provisional (pendiente de calibración con datos reales).
+
+    Para credit spreads 0DTE:
+    - Bajista → vender CALL spread OTM (calls por encima de un mercado que cae)
+    - Alcista → vender PUT spread OTM (puts por debajo de un mercado que sube)
+    - Rango   → iron condor (ambos lados)
+    """
     if d_score >= 5:
         if v_score >= 3:
-            return "Tendencia alcista + vol alta", "Call spread OTM agresivo"
-        return "Tendencia alcista + vol baja", "Call spread OTM conservador"
+            return "Tendencia alcista + vol alta", "Put spread OTM agresivo"
+        return "Tendencia alcista + vol baja", "Put spread OTM conservador"
     elif d_score <= -5:
         if v_score >= 3:
-            return "Tendencia bajista + vol alta", "Put spread OTM agresivo"
-        return "Tendencia bajista + vol baja", "Put spread OTM conservador"
+            return "Tendencia bajista + vol alta", "Call spread OTM agresivo"
+        return "Tendencia bajista + vol baja", "Call spread OTM conservador"
     else:
         if v_score >= 3:
             return "Rango + vol alta", "Iron condor amplio"

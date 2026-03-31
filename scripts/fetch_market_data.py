@@ -206,6 +206,10 @@ def fetch_spx_intraday(window_minutes: int = 30) -> dict:
         open_time = time(9, 30)
         df = df[df.index.time >= open_time]
 
+        # Validar que los datos son de hoy (no de una sesión anterior)
+        today = date.today()
+        df = df[df.index.date == today]
+
         # Tomar primeras window_minutes barras
         df = df.head(window_minutes)
 
