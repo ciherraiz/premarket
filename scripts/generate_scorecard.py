@@ -28,12 +28,12 @@ def print_scorecard(indicators: dict, phase: str = "premarket") -> None:
         return f"+{n}" if n >= 0 else str(n)
 
     print(sep)
-    print(f"  PRE-MARKET SCORECARD — {fecha}")
+    print(f"  PRE-MARKET SCORECARD - {fecha}")
     print(sep)
     print()
 
     # --- D-SCORE block ---
-    print("  [D-SCORE — DIRECCIONAL]")
+    print("  [D-SCORE - DIRECCIONAL]")
     print(f"  {'Indicador':<20} {'Valor':<26} {'Score':<6} Signal")
     print(line)
 
@@ -102,7 +102,7 @@ def print_scorecard(indicators: dict, phase: str = "premarket") -> None:
     print()
 
     # --- V-SCORE block ---
-    print("  [V-SCORE — VOLATILIDAD]")
+    print("  [V-SCORE - VOLATILIDAD]")
     print(f"  {'Indicador':<20} {'Valor':<26} {'Score':<6} Signal")
     print(line)
 
@@ -155,7 +155,7 @@ def print_combined_scorecard(
     fecha = premarket.get("fecha") or open_phase.get("fecha", "N/A")
 
     print(sep)
-    print(f"  SCORECARD COMBINADO — {fecha}  [ventana: {window_minutes} min]")
+    print(f"  SCORECARD COMBINADO - {fecha}  [ventana: {window_minutes} min]")
     print(sep)
 
     # --- Bloque premarket (compacto) ---
@@ -169,7 +169,7 @@ def print_combined_scorecard(
     v_pre   = premarket.get("v_score", 0)
 
     print()
-    print("  [PRE-MARKET — D-SCORE]")
+    print("  [PRE-MARKET - D-SCORE]")
     print(f"  {'Indicador':<20} {'Valor':<26} {'Score':<6} Signal")
     print(line)
 
@@ -220,7 +220,7 @@ def print_combined_scorecard(
     print(f"  D-Score premarket:  {_sign(d_pre)}")
     print()
 
-    print("  [PRE-MARKET — V-SCORE]")
+    print("  [PRE-MARKET - V-SCORE]")
     print(f"  {'Indicador':<20} {'Valor':<26} {'Score':<6} Signal")
     print(line)
 
@@ -244,75 +244,96 @@ def print_combined_scorecard(
     d_open = open_phase.get("d_score", 0)
     v_open = open_phase.get("v_score", 0)
 
-    # Indicadores D-Score open (sólo vwap_position por ahora)
-    D_SCORE_OPEN_KEYS = {"vwap_position"}
-    # Indicadores V-Score open
-    V_SCORE_OPEN_KEYS = {"vix_delta_open"}
-
-    print(f"  [OPEN PHASE — D-SCORE]  (primeros {window_minutes} min)")
+    print(f"  [OPEN PHASE - D-SCORE]  (primeros {window_minutes} min)")
     print(f"  {'Indicador':<20} {'Valor':<26} {'Score':<6} Signal")
     print(line)
 
-    d_open_keys = [k for k in open_phase if k in D_SCORE_OPEN_KEYS]
-    if d_open_keys:
-        for key in d_open_keys:
-            ind = open_phase[key]
-            if isinstance(ind, dict):
-                score  = ind.get("score", 0)
-                signal = ind.get("signal", "N/A")
-                raw    = ind.get("value", "")
-                if isinstance(raw, float):
-                    vwap_level = ind.get("vwap")
-                    if vwap_level is not None:
-                        value = f"Dist={raw:+.4f}%  VWAP={vwap_level}"
-                    else:
-                        value = f"{raw:+.4f}%"
-                else:
-                    value = str(raw)
-                print(f"  {key:<20} {value:<26} {_sign(score):<6} {signal}")
-    else:
-        print(f"  {'(pendiente)':<20} {'—':<26} {'0':<6} —")
+    # VWAP Position
+    vwap = open_phase.get("vwap_position", {})
+    if vwap:
+        raw = vwap.get("value", "")
+        vwap_level = vwap.get("vwap")
+        if isinstance(raw, float) and vwap_level is not None:
+            vwap_val = f"Dist={raw:+.4f}%  VWAP={vwap_level}"
+        elif isinstance(raw, float):
+            vwap_val = f"Dist={raw:+.4f}%"
+        else:
+            vwap_val = str(raw) if raw else f"[{vwap.get('status','ERROR')}]"
+        print(f"  {'VWAP Position':<20} {vwap_val:<26} {_sign(vwap.get('score',0)):<6} {vwap.get('signal','N/A')}")
+
+    # OR Position (si existe)
+    or_pos = open_phase.get("or_position", {})
+    if or_pos:
+        if or_pos.get("status") == "OK":
+            or_high = or_pos.get("or_high")
+            or_low  = or_pos.get("or_low")
+            or_pct  = or_pos.get("or_position")
+            or_val  = f"pos={or_pct:.4f}  H={or_high}  L={or_low}" if or_pct is not None else f"[{or_pos.get('signal')}]"
+        else:
+            or_val = f"[{or_pos.get('status','ERROR')}]"
+        print(f"  {'OR Position':<20} {or_val:<26} {_sign(or_pos.get('score',0)):<6} {or_pos.get('signal','N/A')}")
+
+    # Gap Behavior (si existe)
+    gap_beh = open_phase.get("gap_behavior", {})
+    if gap_beh:
+        if gap_beh.get("status") == "OK":
+            gp  = gap_beh.get("gap_pct")
+            gf  = gap_beh.get("gap_fill_pct")
+            gb_val = f"gap={gp:+.4f}%  fill={gf:.1f}%" if gp is not None and gf is not None else f"[{gap_beh.get('signal')}]"
+        else:
+            gb_val = f"[{gap_beh.get('status','ERROR')}]"
+        print(f"  {'Gap Behavior':<20} {gb_val:<26} {_sign(gap_beh.get('score',0)):<6} {gap_beh.get('signal','N/A')}")
+
+    if not any([vwap, or_pos, gap_beh]):
+        print(f"  {'(pendiente)':<20} {'-':<26} {'0':<6} -")
 
     print(line)
     print(f"  D-Score open:  {_sign(d_open)}")
     print()
 
-    print(f"  [OPEN PHASE — V-SCORE]  (primeros {window_minutes} min)")
+    print(f"  [OPEN PHASE - V-SCORE]  (primeros {window_minutes} min)")
     print(f"  {'Indicador':<20} {'Valor':<26} {'Score':<6} Signal")
     print(line)
 
-    v_open_keys = [k for k in open_phase if k in V_SCORE_OPEN_KEYS]
-    if v_open_keys:
-        for key in v_open_keys:
-            ind = open_phase[key]
-            if isinstance(ind, dict):
-                score  = ind.get("score", 0)
-                signal = ind.get("signal", "N/A")
-                if ind.get("status") == "OK":
-                    delta = ind.get("vix_delta")
-                    value = f"VIX_Δ={delta:+.2f}" if delta is not None else "—"
-                else:
-                    value = f"[{ind.get('status','ERROR')}]"
-                print(f"  {'VIX Delta Open':<20} {value:<26} {_sign(score):<6} {signal}")
-    else:
-        print(f"  {'(pendiente)':<20} {'—':<26} {'0':<6} —")
+    # VIX Delta Open
+    vix_delta = open_phase.get("vix_delta_open", {})
+    if vix_delta:
+        if vix_delta.get("status") == "OK":
+            delta = vix_delta.get("vix_delta")
+            vd_val = f"VIX_delta={delta:+.2f}" if delta is not None else "-"
+        else:
+            vd_val = f"[{vix_delta.get('status','ERROR')}]"
+        print(f"  {'VIX Delta Open':<20} {vd_val:<26} {_sign(vix_delta.get('score',0)):<6} {vix_delta.get('signal','N/A')}")
+
+    # Range Expansion
+    range_exp = open_phase.get("range_expansion", {})
+    if range_exp:
+        if range_exp.get("status") == "OK":
+            ratio_val = range_exp.get("ratio")
+            re_val = f"ratio={ratio_val:.4f}" if ratio_val is not None else "-"
+        else:
+            re_val = f"[{range_exp.get('status','ERROR')}]"
+        print(f"  {'Range Expansion':<20} {re_val:<26} {_sign(range_exp.get('score',0)):<6} {range_exp.get('signal','N/A')}")
+
+    if not any([vix_delta, range_exp]):
+        print(f"  {'(pendiente)':<20} {'-':<26} {'0':<6} -")
 
     print(line)
     print(f"  V-Score open:  {_sign(v_open)}")
     print()
 
-    # --- Totales y decisión ---
+    # --- Totales y decision ---
     d_total = d_pre + d_open
     v_total = v_pre + v_open
 
     print(sep)
-    print("  DECISIÓN FINAL")
+    print("  DECISION FINAL")
     print(f"  D-Score total:  {_sign(d_total):<6}  (premarket {_sign(d_pre)}  |  open {_sign(d_open)})")
     print(f"  V-Score total:  {_sign(v_total):<6}  (premarket {_sign(v_pre)}  |  open {_sign(v_open)})")
     print()
 
     regimen, estrategia = _interpret(d_total, v_total)
-    print(f"  Régimen:    {regimen}")
+    print(f"  Regimen:    {regimen}")
     print(f"  Estrategia: {estrategia}")
     print(sep)
 
