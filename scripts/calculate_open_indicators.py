@@ -72,6 +72,7 @@ def calc_vwap_position(spx_intraday: dict) -> dict:
     base["vwap"]              = round(vwap, 2)
     base["close"]             = round(close, 2)
     base["vwap_distance_pct"] = round(dist, 4)
+    base["value"]             = round(dist, 4)   # alias para el scorecard combinado
 
     if dist > VWAP_THRESHOLD_PCT:
         base["score"]  = 1

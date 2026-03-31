@@ -257,8 +257,17 @@ def print_combined_scorecard(
             if isinstance(ind, dict):
                 score  = ind.get("score", 0)
                 signal = ind.get("signal", "N/A")
-                value  = ind.get("value", "")
-                print(f"  {key:<20} {str(value):<26} {_sign(score):<6} {signal}")
+                raw    = ind.get("value", "")
+                # Formatear el valor numérico con unidad si está disponible
+                if isinstance(raw, float):
+                    vwap_level = ind.get("vwap")
+                    if vwap_level is not None:
+                        value = f"Dist={raw:+.4f}%  VWAP={vwap_level}"
+                    else:
+                        value = f"{raw:+.4f}%"
+                else:
+                    value = str(raw)
+                print(f"  {key:<20} {value:<26} {_sign(score):<6} {signal}")
     else:
         print(f"  {'(pendiente)':<20} {'—':<26} {'0':<6} —")
 

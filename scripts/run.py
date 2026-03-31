@@ -90,6 +90,7 @@ def run_premarket_phase(out: Path) -> dict:
     v_score = ivr["score"] + atr_ratio["score"]
 
     premarket_indicators = {
+        "fecha":           data.get("fecha"),
         "vix_vxv_slope":   slope,
         "vix9d_vix_ratio": ratio,
         "overnight_gap":   gap,
