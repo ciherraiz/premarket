@@ -181,10 +181,10 @@ def test_max_pain_un_strike():
 def _chain_with_net_gex(target_bn: float, spot: float = 5200.0):
     """
     Construye una cadena mínima que produce aproximadamente target_bn billions de GEX.
-    GEX = gamma × OI × 100 × spot² / 1e9
+    GEX = gamma × OI × spot² / 1e9  (sin factor ×100 tras recalibración en PR #16)
     Usamos gamma=0.001 fijo, OI calculado para alcanzar el target.
     """
-    factor = 1e9 / (100 * spot ** 2)
+    factor = 1e9 / (spot ** 2)
     oi = max(1, round(abs(target_bn) * factor / 0.001))
     if target_bn >= 0:
         contracts = [_make_contract(5200, "C", oi=oi, gamma=0.001)]
