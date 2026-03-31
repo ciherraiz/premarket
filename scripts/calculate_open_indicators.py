@@ -1,3 +1,4 @@
+import math
 import pandas as pd
 
 # ---------------------------------------------------------------------------
@@ -7,6 +8,11 @@ import pandas as pd
 VWAP_THRESHOLD_PCT  = 0.10   # % mínimo de distancia al VWAP para señal direccional
 VWAP_WINDOW_MINUTES = 30     # minutos esperados de ventana (para detección de incompletos)
 VIX_DELTA_THRESHOLD = 0.5    # puntos VIX de diferencia para señal de volatilidad
+
+RANGE_EXPANSION_LOW      = 0.6    # ratio < → EXPANSION_BAJA → score +1
+RANGE_EXPANSION_HIGH     = 1.2    # ratio > → EXPANSION_ALTA → score -1
+RANGE_EXP_WINDOW_MINUTES = 30     # ventana esperada (para detección de incompletos)
+TRADING_MINUTES_DAY      = 390    # minutos de una jornada completa de trading
 
 
 # ---------------------------------------------------------------------------
@@ -151,5 +157,127 @@ def calc_vix_delta_open(vix_intraday: dict) -> dict:
     elif delta > VIX_DELTA_THRESHOLD:
         base["score"]  = -1
         base["signal"] = "IV_EXPANDIENDO"
+
+    return base
+
+
+# ---------------------------------------------------------------------------
+# IND-OPEN-04: Range Expansion
+# ---------------------------------------------------------------------------
+
+def calc_range_expansion(spx_intraday: dict, premarket_indicators: dict) -> dict:
+    """
+    Mide si el mercado ha consumido más o menos movimiento del que la IV predecía
+    para la ventana post-open.
+
+    ratio = OR_realized / expected_range
+    OR_realized    = OR_high - OR_low  (puntos SPX)
+    iv_daily_pts   = SPX_open × (VIX/100) / sqrt(252)
+    expected_range = iv_daily_pts × sqrt(window_minutes / 390)
+
+    Scoring:
+        ratio < 0.6   → +1  EXPANSION_BAJA   (favorable para vender premium)
+        0.6 ≤ ratio ≤ 1.2 →  0  NEUTRO
+        ratio > 1.2   → -1  EXPANSION_ALTA   (alerta: mercado expandido)
+
+    Input:
+        spx_intraday        — dict de fetch_spx_intraday()
+        premarket_indicators — sección "premarket" de indicators.json
+    Output: dict con score (-1/0/+1), signal, ratio, or_realized, expected_range, status
+    """
+    base = {
+        "or_high":           None,
+        "or_low":            None,
+        "or_realized":       None,
+        "iv_daily_pts":      None,
+        "expected_range":    None,
+        "ratio":             None,
+        "value":             None,
+        "vix_used":          None,
+        "spx_open":          None,
+        "candles_used":      0,
+        "incomplete_window": False,
+        "score":             0,
+        "signal":            "NEUTRO",
+        "status":            "OK",
+        "fecha":             spx_intraday.get("fecha"),
+    }
+
+    # Propagar error del fetch
+    if spx_intraday.get("status") != "OK":
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_FETCH"
+        return base
+
+    records = spx_intraday.get("ohlcv") or []
+    if not records:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_SIN_DATOS"
+        return base
+
+    df = pd.DataFrame(records)
+
+    required = {"High", "Low", "Close"}
+    missing = required - set(df.columns)
+    if missing:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_COLUMNAS"
+        return base
+
+    window_minutes = spx_intraday.get("window_minutes", RANGE_EXP_WINDOW_MINUTES)
+    n = len(df)
+    base["candles_used"] = n
+
+    if n < window_minutes * 0.5:
+        base["incomplete_window"] = True
+
+    # Leer VIX del premarket (fallback: vix_vxv_slope)
+    vix = None
+    ivr = (premarket_indicators or {}).get("ivr") or {}
+    if ivr.get("vix") is not None:
+        vix = ivr["vix"]
+    else:
+        slope = (premarket_indicators or {}).get("vix_vxv_slope") or {}
+        vix = slope.get("vix")
+
+    if vix is None:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_IV_NO_DISPONIBLE"
+        return base
+
+    spx_open = spx_intraday.get("open_price")
+    if spx_open is None:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_SPX_OPEN_NULO"
+        return base
+
+    # Calcular OR realizado
+    or_high = float(df["High"].max())
+    or_low  = float(df["Low"].min())
+    or_realized = or_high - or_low
+
+    # Calcular rango esperado
+    iv_daily_pts   = spx_open * (vix / 100) / math.sqrt(252)
+    expected_range = iv_daily_pts * math.sqrt(window_minutes / TRADING_MINUTES_DAY)
+
+    ratio = round(or_realized / expected_range, 4)
+
+    base["or_high"]        = round(or_high, 2)
+    base["or_low"]         = round(or_low, 2)
+    base["or_realized"]    = round(or_realized, 2)
+    base["iv_daily_pts"]   = round(iv_daily_pts, 4)
+    base["expected_range"] = round(expected_range, 4)
+    base["ratio"]          = ratio
+    base["value"]          = ratio
+    base["vix_used"]       = float(vix)
+    base["spx_open"]       = float(spx_open)
+
+    if ratio < RANGE_EXPANSION_LOW:
+        base["score"]  = 1
+        base["signal"] = "EXPANSION_BAJA"
+    elif ratio > RANGE_EXPANSION_HIGH:
+        base["score"]  = -1
+        base["signal"] = "EXPANSION_ALTA"
+    # else: score=0, signal="NEUTRO" (ya en base)
 
     return base
