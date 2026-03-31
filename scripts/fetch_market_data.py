@@ -1,5 +1,6 @@
 import yfinance as yf
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 try:
     from tastytrade_client import TastyTradeClient
@@ -151,6 +152,87 @@ def fetch_spx_ohlcv(period_days: int = 35) -> dict:
                 "Volume": int(row["Volume"]),
             })
         result["ohlcv"] = records
+
+    except Exception:
+        result["status"] = "ERROR"
+
+    return result
+
+
+def fetch_spx_intraday(window_minutes: int = 30) -> dict:
+    """
+    Descarga barras de 1 minuto del SPX (^GSPC) para la sesión actual.
+    Filtra desde las 09:30 ET y devuelve las primeras window_minutes barras.
+
+    Nota: yfinance aplica ~15 min de delay en datos intraday free-tier.
+    Ejecutar este script window_minutes + 15 minutos después de la apertura.
+
+    Returns:
+        {
+            "ohlcv":          list[dict],  # Datetime, Open, High, Low, Close, Volume
+            "bars":           int,
+            "window_minutes": int,
+            "open_price":     float | None,  # Open de la primera barra (09:30 ET)
+            "fecha":          str,
+            "status":         str,   # "OK" | "ERROR" | "INSUFFICIENT_DATA"
+        }
+    """
+    result = {
+        "ohlcv": None,
+        "bars": 0,
+        "window_minutes": window_minutes,
+        "open_price": None,
+        "fecha": str(date.today()),
+        "status": "OK",
+    }
+
+    try:
+        df = yf.download("^GSPC", period="1d", interval="1m",
+                         prepost=False, auto_adjust=True, progress=False)
+
+        if df.empty:
+            result["status"] = "INSUFFICIENT_DATA"
+            return result
+
+        # Normalizar MultiIndex de yfinance
+        import pandas as pd
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+
+        # Convertir índice a hora ET y filtrar desde 09:30
+        et = ZoneInfo("America/New_York")
+        df.index = df.index.tz_convert(et)
+        open_time = time(9, 30)
+        df = df[df.index.time >= open_time]
+
+        # Tomar primeras window_minutes barras
+        df = df.head(window_minutes)
+
+        bars = len(df)
+        result["bars"] = bars
+
+        if bars == 0:
+            result["status"] = "INSUFFICIENT_DATA"
+            return result
+
+        result["fecha"] = str(df.index[-1].date())
+
+        records = []
+        for idx, row in df.iterrows():
+            records.append({
+                "Datetime": str(idx),
+                "Open":     round(float(row["Open"]), 2),
+                "High":     round(float(row["High"]), 2),
+                "Low":      round(float(row["Low"]), 2),
+                "Close":    round(float(row["Close"]), 2),
+                "Volume":   int(row["Volume"]),
+            })
+        result["ohlcv"] = records
+        result["open_price"] = records[0]["Open"]
+
+        if bars < window_minutes:
+            result["status"] = "INSUFFICIENT_DATA"
 
     except Exception:
         result["status"] = "ERROR"
