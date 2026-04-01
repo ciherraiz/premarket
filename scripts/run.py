@@ -24,7 +24,7 @@ from calculate_indicators import (
     calc_vix9d_vix_ratio,
     calc_vix_vxv_slope,
 )
-from calculate_open_indicators import calc_vwap_position, calc_vix_delta_open, calc_range_expansion, calc_gap_behavior
+from calculate_open_indicators import calc_vwap_position, calc_vix_delta_open, calc_range_expansion, calc_gap_behavior, calc_realized_vol_open
 from generate_scorecard import print_combined_scorecard, print_scorecard
 
 
@@ -157,22 +157,24 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
     vwap      = calc_vwap_position(intraday)
     vix_delta = calc_vix_delta_open(vix_intraday)
 
-    # Dependencia inter-fase: leer premarket para range expansion y gap behavior
+    # Dependencia inter-fase: leer premarket para range expansion, gap behavior y realized vol
     premarket_ind = _read_json(out / "indicators.json").get("premarket", {})
     range_exp     = calc_range_expansion(intraday, premarket_ind)
     gap_beh       = calc_gap_behavior(intraday, premarket_ind)
+    realized_vol  = calc_realized_vol_open(intraday, premarket_ind)
 
     d_score_open = vwap["score"] + gap_beh["score"]
-    v_score_open = vix_delta["score"] + range_exp["score"]
+    v_score_open = vix_delta["score"] + range_exp["score"] + realized_vol["score"]
 
     open_indicators = {
-        "vwap_position":   vwap,
-        "vix_delta_open":  vix_delta,
-        "range_expansion": range_exp,
-        "gap_behavior":    gap_beh,
-        "d_score":         d_score_open,
-        "v_score":         v_score_open,
-        "window_minutes":  window_minutes,
+        "vwap_position":     vwap,
+        "vix_delta_open":    vix_delta,
+        "range_expansion":   range_exp,
+        "gap_behavior":      gap_beh,
+        "realized_vol_open": realized_vol,
+        "d_score":           d_score_open,
+        "v_score":           v_score_open,
+        "window_minutes":    window_minutes,
     }
 
     # Actualizar indicators.json con sección open
@@ -184,6 +186,7 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
           f"gap_beh={gap_beh['signal']}({gap_beh['score']})  "
           f"vix_delta={vix_delta['signal']}({vix_delta['score']})  "
           f"range_exp={range_exp['signal']}({range_exp['score']})  "
+          f"realized_vol={realized_vol['signal']}({realized_vol['score']})  "
           f"D={d_score_open}  V={v_score_open}")
 
     return open_indicators

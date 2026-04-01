@@ -315,7 +315,17 @@ def print_combined_scorecard(
             re_val = f"[{range_exp.get('status','ERROR')}]"
         print(f"  {'Range Expansion':<20} {re_val:<26} {_sign(range_exp.get('score',0)):<6} {range_exp.get('signal','N/A')}")
 
-    if not any([vix_delta, range_exp]):
+    # Realized Vol Open
+    rv_open = open_phase.get("realized_vol_open", {})
+    if rv_open:
+        if rv_open.get("status") == "OK":
+            ratio_val = rv_open.get("rv_ratio")
+            rv_val = f"rv_ratio={ratio_val:.4f}" if ratio_val is not None else "-"
+        else:
+            rv_val = f"[{rv_open.get('status','ERROR')}]"
+        print(f"  {'Realized Vol':<20} {rv_val:<26} {_sign(rv_open.get('score',0)):<6} {rv_open.get('signal','N/A')}")
+
+    if not any([vix_delta, range_exp, rv_open]):
         print(f"  {'(pendiente)':<20} {'-':<26} {'0':<6} -")
 
     print(line)
