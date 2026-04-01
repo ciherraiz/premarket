@@ -18,6 +18,10 @@ GAP_MIN_PCT      = 0.15   # % mínimo de gap para considerarlo significativo
 GAP_MANTIENE_PCT = 25.0   # fill < 25 % → gap mantenido (momentum genuino)
 GAP_NEUTRO_PCT   = 75.0   # fill >= 75 % → gap rellenado (señal neutralizada)
 
+RV_OPEN_MIN_CANDLES = 5     # mínimo de closes para calcular (< 5 → INSUFFICIENT_DATA)
+RV_OPEN_RATIO_BAJO  = 0.8   # rv_ratio < → PRIMA_SOBREVALORADA → score +2
+RV_OPEN_RATIO_ALTO  = 1.2   # rv_ratio > → PRIMA_INFRAVALORADA → score -2
+
 
 # ---------------------------------------------------------------------------
 # IND-OPEN-01: VWAP Position
@@ -408,5 +412,99 @@ def calc_gap_behavior(spx_intraday: dict, premarket_indicators: dict) -> dict:
         else:
             base["score"]  = 0
             base["signal"] = "GAP_BAJISTA_RELLENO"
+
+    return base
+
+
+# ---------------------------------------------------------------------------
+# IND-OPEN-06: Realized Volatility Open
+# ---------------------------------------------------------------------------
+
+def calc_realized_vol_open(spx_intraday: dict, premarket_indicators: dict) -> dict:
+    """
+    Mide si la volatilidad realizada intraday (log-returns de velas 1-minuto)
+    está por encima o por debajo de la IV del premarket (VIX).
+
+    rv_1m    = std(log_returns, ddof=1) × sqrt(252 × TRADING_MINUTES_DAY)
+    iv_daily = VIX / 100
+    rv_ratio = rv_1m / iv_daily
+
+    Scoring:
+        rv_ratio < 0.8   → +2  PRIMA_SOBREVALORADA   (RV baja → opciones caras)
+        0.8 ≤ ratio ≤ 1.2 →  0  NEUTRO
+        rv_ratio > 1.2   → -2  PRIMA_INFRAVALORADA   (RV alta → opciones baratas)
+
+    Spec: specs/ind_open_realized_vol.md
+    """
+    base = {
+        "rv_1m":        None,
+        "iv_daily":     None,
+        "rv_ratio":     None,
+        "candles_used": 0,
+        "score":        0,
+        "signal":       "NEUTRO",
+        "status":       "OK",
+        "fecha":        spx_intraday.get("fecha"),
+    }
+
+    # Paso 1: validar fetch
+    if spx_intraday.get("status") != "OK":
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_FETCH"
+        return base
+
+    records = spx_intraday.get("ohlcv") or []
+    if not records:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_FETCH"
+        return base
+
+    df = pd.DataFrame(records)
+    if "Close" not in df.columns:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_FETCH"
+        return base
+
+    # Paso 2: contar velas
+    closes = df["Close"].tolist()
+    base["candles_used"] = len(closes)
+    if len(closes) < RV_OPEN_MIN_CANDLES:
+        base["status"] = "INSUFFICIENT_DATA"
+        base["signal"] = "INSUFFICIENT_DATA"
+        return base
+
+    # Paso 3: obtener IV del premarket (ivr.vix → fallback vix_vxv_slope.vix)
+    vix = ((premarket_indicators or {}).get("ivr") or {}).get("vix")
+    if vix is None:
+        vix = ((premarket_indicators or {}).get("vix_vxv_slope") or {}).get("vix")
+    if vix is None:
+        base["status"] = "MISSING_DATA"
+        base["signal"] = "IV_NO_DISPONIBLE"
+        return base
+
+    iv_daily = vix / 100
+    if iv_daily == 0:
+        base["status"] = "ERROR"
+        base["signal"] = "ERROR_CALCULO"
+        return base
+
+    # Paso 4: log-returns, std muestral, anualizar
+    log_returns = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
+    std_lr  = pd.Series(log_returns).std(ddof=1)
+    rv_1m   = std_lr * math.sqrt(252 * TRADING_MINUTES_DAY)
+    rv_ratio = round(rv_1m / iv_daily, 4)
+
+    base["rv_1m"]    = rv_1m
+    base["iv_daily"] = iv_daily
+    base["rv_ratio"] = rv_ratio
+
+    # Paso 5: scoring (umbrales estrictos)
+    if rv_ratio < RV_OPEN_RATIO_BAJO:
+        base["score"]  = 2
+        base["signal"] = "PRIMA_SOBREVALORADA"
+    elif rv_ratio > RV_OPEN_RATIO_ALTO:
+        base["score"]  = -2
+        base["signal"] = "PRIMA_INFRAVALORADA"
+    # else: score=0, signal="NEUTRO" (ya en base)
 
     return base
