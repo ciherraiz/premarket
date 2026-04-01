@@ -293,7 +293,7 @@ def build_open_message(indicators: dict, window: int = 30) -> str:
     lines = [
         f"📊 *SPX 0DTE — Análisis Final* \\| {_esc(fecha)}",
         "",
-        f"━━━ Premarket: D={_esc(_sign(d_pre))} \\| V={_esc(_sign(v_pre))} ━━━━━━━━━",
+        f"━━━ Premarket: D\\={_esc(_sign(d_pre))} \\| V\\={_esc(_sign(v_pre))} ━━━━━━━━━",
         (f"{_emoji(slope.get('signal',''))} Slope: {_esc(slope.get('signal','N/A'))} \\({_esc(_sign(slope.get('score',0)))}\\)"
          f"   ·  {_emoji(ratio.get('signal',''))} Ratio: {_esc(ratio.get('signal','N/A'))} \\({_esc(_sign(ratio.get('score',0)))}\\)"),
         (f"{_emoji(gap.get('signal',''))}   Gap:   {_esc(gap.get('signal','N/A'))} \\({_esc(_sign(gap.get('score',0)))}\\)"
@@ -302,7 +302,7 @@ def build_open_message(indicators: dict, window: int = 30) -> str:
          f"   ·  {_emoji(ivr.get('signal',''))}  IVR:   {_esc(ivr.get('signal','N/A'))} \\({_esc(_sign(ivr.get('score',0)))}\\)"),
         f"{_emoji(atr.get('signal',''))}   ATR:   {_esc(atr.get('signal','N/A'))} \\({_esc(_sign(atr.get('score',0)))}\\)",
         "",
-        f"━━━ Open Phase \\({_esc(str(window))}min\\): D={_esc(_sign(d_open))} \\| V={_esc(_sign(v_open))} ━━━",
+        f"━━━ Open Phase \\({_esc(str(window))}min\\): D\\={_esc(_sign(d_open))} \\| V\\={_esc(_sign(v_open))} ━━━",
         _open_row(vwap,    "VWAP        ", "value",       ".4f",  "signal", "score"),
         _open_row(gap_beh, "Gap Behavior", "gap_fill_pct", ".1f", "signal", "score"),
         _open_row(vix_d,   "VIX Delta   ", "vix_delta",   "+.2f", "signal", "score"),
