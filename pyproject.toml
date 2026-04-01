@@ -9,6 +9,7 @@ dependencies = [
     "yfinance>=1.2.0",
     "tastytrade>=9.0",
     "python-dotenv>=1.0",
+    "httpx>=0.27",
 ]
 
 [dependency-groups]

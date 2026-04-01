@@ -192,6 +192,23 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
     return open_indicators
 
 
+def _call_notify(phase: str, window: int = 30) -> None:
+    """Invoca notify_telegram.py como subprocess. Best-effort: no aborta el pipeline."""
+    import subprocess
+    notify_script = Path(__file__).parent / "notify_telegram.py"
+    cmd = [sys.executable, str(notify_script), "--phase", phase]
+    if phase == "open":
+        cmd += ["--window", str(window)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"[notify] WARN: {result.stderr.strip()}", file=sys.stderr)
+        else:
+            print("[notify] Mensaje Telegram enviado.")
+    except Exception as e:
+        print(f"[notify] WARN: no se pudo invocar notify_telegram.py: {e}", file=sys.stderr)
+
+
 def _read_json(path: Path) -> dict:
     """Lee un JSON si existe, o devuelve dict vacío."""
     if path.exists():
@@ -216,6 +233,12 @@ def _parse_args():
         metavar="MINUTOS",
         help="Minutos de ventana para open phase (default: 30)",
     )
+    parser.add_argument(
+        "--notify",
+        action="store_true",
+        default=False,
+        help="Enviar resultado a Telegram tras el pipeline (requiere TELEGRAM_BOT_TOKEN en .env)",
+    )
     return parser.parse_args()
 
 
@@ -227,12 +250,16 @@ def main():
     if args.phase == "premarket":
         indicators = run_premarket_phase(out)
         print_scorecard(indicators)
+        if args.notify:
+            _call_notify("premarket")
 
     elif args.phase == "open":
         open_ind = run_open_phase(out, args.window)
         full = _read_json(out / "indicators.json")
         pre_ind = full.get("premarket", {})
         print_combined_scorecard(pre_ind, open_ind, args.window)
+        if args.notify:
+            _call_notify("open", args.window)
 
 
 if __name__ == "__main__":
