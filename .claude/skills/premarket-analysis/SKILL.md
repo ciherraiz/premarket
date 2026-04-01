@@ -1,4 +1,7 @@
-# Skill: /premarket-analysis
+---
+name: premarket-analysis
+description: Ejecuta el pipeline completo de análisis premarket SPX 0DTE y envía el resultado a Telegram. Usar cuando se quiera lanzar el análisis manualmente o comprobar el estado del mercado.
+---
 
 Ejecuta el pipeline completo de análisis premarket SPX 0DTE y envía el resultado a Telegram.
 
