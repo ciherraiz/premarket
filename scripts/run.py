@@ -1,10 +1,12 @@
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from log_history import append_record, fill_outcomes
 from fetch_market_data import (
     GEX_MAX_STRIKES,
     fetch_es_prev_close,
@@ -26,6 +28,13 @@ from calculate_indicators import (
 )
 from calculate_open_indicators import calc_vwap_position, calc_vix_delta_open, calc_range_expansion, calc_gap_behavior, calc_realized_vol_open
 from generate_scorecard import print_combined_scorecard, print_scorecard
+
+
+def _fecha_ayer(fecha_hoy: str) -> str:
+    """Devuelve la fecha del día anterior en formato YYYY-MM-DD (sin lógica de festivos)."""
+    from datetime import date, timedelta
+    d = date.fromisoformat(fecha_hoy)
+    return str(d - timedelta(days=1))
 
 
 def run_premarket_phase(out: Path) -> dict:
@@ -118,6 +127,56 @@ def run_premarket_phase(out: Path) -> dict:
           f"atr={atr_ratio['signal']}({atr_ratio['score']})  "
           f"D={d_score}  V={v_score}")
 
+    # Paso 3: rellenar outcomes del día anterior y guardar registro de hoy
+    es_prev_close_value = data.get("es_prev", {}).get("prev_close")
+    fecha_hoy = data.get("fecha", "")
+    if es_prev_close_value and fecha_hoy:
+        n = fill_outcomes(es_prev_close_value, _fecha_ayer(fecha_hoy))
+        if n:
+            print(f"[history] {n} registro(s) de ayer actualizados con outcome.")
+
+    append_record({
+        "fecha":          fecha_hoy,
+        "phase":          "premarket",
+        "timestamp":      datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "slope_vix":      slope.get("vix"),
+        "slope_vxv":      slope.get("vxv"),
+        "slope_ratio":    slope.get("ratio"),
+        "slope_score":    slope.get("score"),
+        "slope_signal":   slope.get("signal"),
+        "ratio_vix9d":    ratio.get("vix9d"),
+        "ratio_vix":      ratio.get("vix"),
+        "ratio_value":    ratio.get("ratio"),
+        "ratio_score":    ratio.get("score"),
+        "ratio_signal":   ratio.get("signal"),
+        "gap_pct":        gap.get("gap_pct"),
+        "gap_score":      gap.get("score"),
+        "gap_signal":     gap.get("signal"),
+        "gex_bn":         net_gex.get("net_gex_bn"),
+        "gex_score":      net_gex.get("score_gex"),
+        "gex_signal":     net_gex.get("signal_gex"),
+        "flip_level":     net_gex.get("flip_level"),
+        "flip_score":     net_gex.get("score_flip"),
+        "flip_signal":    net_gex.get("signal_flip"),
+        "ivr":            ivr.get("ivr"),
+        "ivr_vix":        ivr.get("vix"),
+        "ivr_score":      ivr.get("score"),
+        "ivr_signal":     ivr.get("signal"),
+        "atr_ratio":      atr_ratio.get("atr_ratio"),
+        "atr_score":      atr_ratio.get("score"),
+        "atr_signal":     atr_ratio.get("signal"),
+        "d_score":        d_score,
+        "v_score":        v_score,
+        "spot":           net_gex.get("spot"),
+        "put_wall":       net_gex.get("put_wall"),
+        "call_wall":      net_gex.get("call_wall"),
+        "max_pain":       net_gex.get("max_pain"),
+        "outcome_spx_close":      None,
+        "outcome_spx_change_pct": None,
+        "outcome_direction":      None,
+    })
+    print("[history] Registro premarket guardado.")
+
     return premarket_indicators
 
 
@@ -175,6 +234,7 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
         "d_score":           d_score_open,
         "v_score":           v_score_open,
         "window_minutes":    window_minutes,
+        "spot_open":         intraday.get("open_price"),
     }
 
     # Actualizar indicators.json con sección open
@@ -188,6 +248,43 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
           f"range_exp={range_exp['signal']}({range_exp['score']})  "
           f"realized_vol={realized_vol['signal']}({realized_vol['score']})  "
           f"D={d_score_open}  V={v_score_open}")
+
+    # Guardar registro en historial
+    fecha_open = intraday.get("fecha", "")
+    d_pre = premarket_ind.get("d_score") or 0
+    v_pre = premarket_ind.get("v_score") or 0
+    append_record({
+        "fecha":              fecha_open,
+        "phase":              "open",
+        "timestamp":          datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "window_minutes":     window_minutes,
+        "vwap_value":         vwap.get("value"),
+        "vwap_score":         vwap.get("score"),
+        "vwap_signal":        vwap.get("signal"),
+        "gap_beh_fill_pct":   gap_beh.get("gap_fill_pct"),
+        "gap_beh_score":      gap_beh.get("score"),
+        "gap_beh_signal":     gap_beh.get("signal"),
+        "vix_delta":          vix_delta.get("vix_delta"),
+        "vix_delta_score":    vix_delta.get("score"),
+        "vix_delta_signal":   vix_delta.get("signal"),
+        "range_exp_ratio":    range_exp.get("ratio"),
+        "range_exp_score":    range_exp.get("score"),
+        "range_exp_signal":   range_exp.get("signal"),
+        "rv_ratio":           realized_vol.get("rv_ratio"),
+        "rv_score":           realized_vol.get("score"),
+        "rv_signal":          realized_vol.get("signal"),
+        "d_score_open":       d_score_open,
+        "v_score_open":       v_score_open,
+        "d_score_premarket":  d_pre,
+        "v_score_premarket":  v_pre,
+        "d_score_total":      d_pre + d_score_open,
+        "v_score_total":      v_pre + v_score_open,
+        "spot_open":          intraday.get("open_price"),
+        "outcome_spx_close":                None,
+        "outcome_spx_change_from_open_pct": None,
+        "outcome_direction":                None,
+    })
+    print("[history] Registro open guardado.")
 
     return open_indicators
 
