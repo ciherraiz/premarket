@@ -130,14 +130,27 @@ Append-only en `logs/mancini_trades.jsonl`. Cada trade:
 }
 ```
 
-### 7. tweet_reader.py + Skill /mancini-scan
+### 7. tweet_fetcher.py + tweet_parser.py + Skill /mancini-scan
 
-Skill Claude que usa Chrome MCP para:
-1. Navegar a x.com/AdamMancini4
-2. Extraer texto de tweets recientes
-3. Identificar tweet del plan del día (NLP)
-4. Extraer niveles estructurados
-5. Escribir/actualizar `outputs/mancini_plan.json`
+**tweet_fetcher.py** — obtiene tweets vía `twikit` (session cookies, sin API key de X):
+1. Autenticación vía cookies (`X_COOKIES_FILE`) o login (`X_USERNAME`/`X_PASSWORD`)
+2. Fetch timeline de @AdamMancini4
+3. Filtrado a tweets del día (timezone ET)
+4. Retorna lista de `{id, text, created_at}`
+
+**tweet_parser.py** — extrae niveles estructurados vía Claude Haiku:
+1. Construye prompt con convenciones de notación de Mancini
+2. Llama a Haiku (`ANTHROPIC_API_KEY`) con los tweets como input
+3. Parsea respuesta JSON a `DailyPlan`
+4. Retorna `None` si Haiku determina que no hay plan nuevo
+
+**Skill /mancini-scan** — orquesta fetch + parse + save:
+1. `fetch_tweets_sync()` → tweets del día
+2. `parse_tweets_to_plan()` → DailyPlan o None
+3. Merge con plan existente si ya hay uno de hoy
+4. `save_plan()` → `outputs/mancini_plan.json`
+
+Env vars requeridas: `X_COOKIES_FILE` (o `X_USERNAME`+`X_PASSWORD`), `ANTHROPIC_API_KEY`
 
 ### 8. run_mancini.py — CLI
 
