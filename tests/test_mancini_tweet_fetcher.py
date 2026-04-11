@@ -1,11 +1,11 @@
-"""Tests para scripts/mancini/tweet_fetcher.py"""
+"""Tests para scripts/mancini/tweet_fetcher.py — httpx + cookies de X."""
 
-import asyncio
+import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -13,117 +13,154 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 
 from scripts.mancini.tweet_fetcher import (
+    _load_cookies,
+    _build_client,
+    _parse_x_datetime,
     fetch_mancini_tweets,
     fetch_tweets_sync,
-    _init_client,
     ET,
 )
 
 
-# ── Helpers ────────────────────────────────────────────────────────────
+# ── _load_cookies ──────────────────────────────────────────────────────
 
-def _make_tweet(text: str, dt: datetime) -> MagicMock:
-    tweet = MagicMock()
-    tweet.id = "123456"
-    tweet.full_text = text
-    tweet.created_at_datetime = dt
-    return tweet
-
-
-def _today_dt(hour=10) -> datetime:
-    """Devuelve un datetime de hoy en ET."""
-    now = datetime.now(ET)
-    return now.replace(hour=hour, minute=0, second=0, microsecond=0)
-
-
-def _yesterday_dt(hour=10) -> datetime:
-    """Devuelve un datetime de ayer en ET."""
-    from datetime import timedelta
-    return _today_dt(hour) - timedelta(days=1)
-
-
-# ── _init_client ───────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_init_client_loads_cookies(tmp_path, monkeypatch):
-    """Si cookies.json existe, lo carga."""
+def test_load_cookies_list_format(tmp_path, monkeypatch):
+    """Cookie-Editor exporta lista de objetos [{name, value, ...}]."""
     cookies_file = tmp_path / "cookies.json"
-    cookies_file.write_text('{"ct0": "abc", "auth_token": "xyz"}')
+    cookies_file.write_text(json.dumps([
+        {"name": "ct0", "value": "abc123", "domain": ".x.com"},
+        {"name": "auth_token", "value": "xyz789", "domain": ".x.com"},
+    ]))
     monkeypatch.setattr(
         "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
     )
-
-    with patch("scripts.mancini.tweet_fetcher.Client") as MockClient:
-        mock_instance = MagicMock()
-        MockClient.return_value = mock_instance
-        client = await _init_client()
-        mock_instance.load_cookies.assert_called_once_with(str(cookies_file))
+    result = _load_cookies()
+    assert result == {"ct0": "abc123", "auth_token": "xyz789"}
 
 
-@pytest.mark.asyncio
-async def test_init_client_raises_without_cookies_or_creds(tmp_path, monkeypatch):
-    """Sin cookies ni credenciales lanza RuntimeError."""
+def test_load_cookies_dict_format(tmp_path, monkeypatch):
+    """Formato dict simple {name: value}."""
+    cookies_file = tmp_path / "cookies.json"
+    cookies_file.write_text(json.dumps({"ct0": "abc", "auth_token": "xyz"}))
+    monkeypatch.setattr(
+        "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
+    )
+    result = _load_cookies()
+    assert result["ct0"] == "abc"
+    assert result["auth_token"] == "xyz"
+
+
+def test_load_cookies_missing_file(tmp_path, monkeypatch):
+    """Sin cookies.json lanza RuntimeError."""
     monkeypatch.setattr(
         "scripts.mancini.tweet_fetcher.COOKIES_PATH", tmp_path / "nope.json"
     )
-    monkeypatch.delenv("X_USERNAME", raising=False)
-    monkeypatch.delenv("X_PASSWORD", raising=False)
-
-    with pytest.raises(RuntimeError, match="No se encontró cookies.json"):
-        await _init_client()
+    with pytest.raises(RuntimeError, match="No se encontró"):
+        _load_cookies()
 
 
-@pytest.mark.asyncio
-async def test_init_client_login_with_credentials(tmp_path, monkeypatch):
-    """Con credenciales pero sin cookies, hace login y guarda cookies."""
-    monkeypatch.setattr(
-        "scripts.mancini.tweet_fetcher.COOKIES_PATH", tmp_path / "cookies.json"
-    )
-    monkeypatch.setenv("X_USERNAME", "user")
-    monkeypatch.setenv("X_EMAIL", "email@test.com")
-    monkeypatch.setenv("X_PASSWORD", "pass")
+# ── _build_client ──────────────────────────────────────────────────────
 
-    with patch("scripts.mancini.tweet_fetcher.Client") as MockClient:
-        mock_instance = MagicMock()
-        mock_instance.login = AsyncMock()
-        MockClient.return_value = mock_instance
+def test_build_client_ok():
+    """Crea cliente httpx con cookies válidas."""
+    client = _build_client({"ct0": "token123", "auth_token": "auth456"})
+    assert client is not None
+    assert "Bearer" in client.headers["authorization"]
+    assert client.headers["x-csrf-token"] == "token123"
 
-        client = await _init_client()
-        mock_instance.login.assert_called_once_with(
-            auth_info_1="user",
-            auth_info_2="email@test.com",
-            password="pass",
-        )
-        mock_instance.save_cookies.assert_called_once()
+
+def test_build_client_missing_ct0():
+    """Sin ct0 lanza RuntimeError."""
+    with pytest.raises(RuntimeError, match="ct0"):
+        _build_client({"auth_token": "abc"})
+
+
+def test_build_client_missing_auth_token():
+    """Sin auth_token lanza RuntimeError."""
+    with pytest.raises(RuntimeError, match="auth_token"):
+        _build_client({"ct0": "abc"})
+
+
+# ── _parse_x_datetime ─────────────────────────────────────────────────
+
+def test_parse_x_datetime_valid():
+    """Parsea formato de fecha de X correctamente."""
+    dt = _parse_x_datetime("Fri Apr 11 14:44:47 +0000 2026")
+    assert dt is not None
+    assert dt.year == 2026
+    assert dt.month == 4
+    assert dt.day == 11
+
+
+def test_parse_x_datetime_invalid():
+    """Fecha inválida retorna None."""
+    assert _parse_x_datetime("invalid") is None
+    assert _parse_x_datetime("") is None
+    assert _parse_x_datetime(None) is None
 
 
 # ── fetch_mancini_tweets ──────────────────────────────────────────────
 
-@pytest.mark.asyncio
-async def test_fetch_tweets_filters_today(monkeypatch, tmp_path):
+def _today_x_date(hour=10) -> str:
+    """Genera fecha en formato X para hoy."""
+    now = datetime.now(ET).replace(hour=hour, minute=0, second=0, microsecond=0)
+    utc = now.astimezone(ZoneInfo("UTC"))
+    return utc.strftime("%a %b %d %H:%M:%S +0000 %Y")
+
+
+def _yesterday_x_date(hour=10) -> str:
+    """Genera fecha en formato X para ayer."""
+    now = datetime.now(ET).replace(hour=hour, minute=0, second=0, microsecond=0)
+    yesterday = now - timedelta(days=1)
+    utc = yesterday.astimezone(ZoneInfo("UTC"))
+    return utc.strftime("%a %b %d %H:%M:%S +0000 %Y")
+
+
+def test_fetch_tweets_filters_today(tmp_path, monkeypatch):
     """Solo retorna tweets de hoy."""
     cookies_file = tmp_path / "cookies.json"
-    cookies_file.write_text("{}")
+    cookies_file.write_text(json.dumps([
+        {"name": "ct0", "value": "abc"},
+        {"name": "auth_token", "value": "xyz"},
+    ]))
     monkeypatch.setattr(
         "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
     )
 
-    today_tweet = _make_tweet("ES plan today", _today_dt())
-    yesterday_tweet = _make_tweet("old plan", _yesterday_dt())
+    mock_user_resp = MagicMock()
+    mock_user_resp.json.return_value = {
+        "data": {"user": {"result": {"rest_id": "12345"}}}
+    }
 
-    mock_user = MagicMock()
-    mock_user.id = "999"
+    mock_tweets_resp = MagicMock()
+    mock_tweets_resp.json.return_value = {
+        "data": {"user": {"result": {"timeline_v2": {"timeline": {"instructions": [{
+            "type": "TimelineAddEntries",
+            "entries": [
+                {"content": {
+                    "entryType": "TimelineTimelineItem",
+                    "itemContent": {"tweet_results": {"result": {"legacy": {
+                        "id_str": "1", "full_text": "ES plan today",
+                        "created_at": _today_x_date(),
+                    }}}},
+                }},
+                {"content": {
+                    "entryType": "TimelineTimelineItem",
+                    "itemContent": {"tweet_results": {"result": {"legacy": {
+                        "id_str": "2", "full_text": "old plan",
+                        "created_at": _yesterday_x_date(),
+                    }}}},
+                }},
+            ],
+        }]}}}}}
+    }
 
-    with patch("scripts.mancini.tweet_fetcher.Client") as MockClient:
-        mock_instance = MagicMock()
-        mock_instance.load_cookies = MagicMock()
-        mock_instance.get_user_by_screen_name = AsyncMock(return_value=mock_user)
-        mock_instance.get_user_tweets = AsyncMock(
-            return_value=[today_tweet, yesterday_tweet]
-        )
-        MockClient.return_value = mock_instance
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build:
+        mock_client = MagicMock()
+        mock_client.get.side_effect = [mock_user_resp, mock_tweets_resp]
+        mock_build.return_value = mock_client
 
-        result = await fetch_mancini_tweets()
+        result = fetch_mancini_tweets()
 
     assert len(result) == 1
     assert result[0]["text"] == "ES plan today"
@@ -131,82 +168,39 @@ async def test_fetch_tweets_filters_today(monkeypatch, tmp_path):
     assert "created_at" in result[0]
 
 
-@pytest.mark.asyncio
-async def test_fetch_tweets_empty_timeline(monkeypatch, tmp_path):
-    """Timeline vacío devuelve lista vacía."""
+def test_fetch_tweets_empty_timeline(tmp_path, monkeypatch):
+    """Timeline sin tweets de hoy devuelve lista vacía."""
     cookies_file = tmp_path / "cookies.json"
-    cookies_file.write_text("{}")
+    cookies_file.write_text(json.dumps([
+        {"name": "ct0", "value": "abc"},
+        {"name": "auth_token", "value": "xyz"},
+    ]))
     monkeypatch.setattr(
         "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
     )
 
-    mock_user = MagicMock()
-    mock_user.id = "999"
+    mock_user_resp = MagicMock()
+    mock_user_resp.json.return_value = {
+        "data": {"user": {"result": {"rest_id": "12345"}}}
+    }
 
-    with patch("scripts.mancini.tweet_fetcher.Client") as MockClient:
-        mock_instance = MagicMock()
-        mock_instance.load_cookies = MagicMock()
-        mock_instance.get_user_by_screen_name = AsyncMock(return_value=mock_user)
-        mock_instance.get_user_tweets = AsyncMock(return_value=[])
-        MockClient.return_value = mock_instance
+    mock_tweets_resp = MagicMock()
+    mock_tweets_resp.json.return_value = {
+        "data": {"user": {"result": {"timeline_v2": {"timeline": {"instructions": [{
+            "type": "TimelineAddEntries", "entries": [],
+        }]}}}}}
+    }
 
-        result = await fetch_mancini_tweets()
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build:
+        mock_client = MagicMock()
+        mock_client.get.side_effect = [mock_user_resp, mock_tweets_resp]
+        mock_build.return_value = mock_client
+
+        result = fetch_mancini_tweets()
 
     assert result == []
 
 
-@pytest.mark.asyncio
-async def test_fetch_tweets_multiple_today(monkeypatch, tmp_path):
-    """Retorna múltiples tweets de hoy."""
-    cookies_file = tmp_path / "cookies.json"
-    cookies_file.write_text("{}")
-    monkeypatch.setattr(
-        "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
-    )
-
-    tweets = [
-        _make_tweet("tweet 1", _today_dt(9)),
-        _make_tweet("tweet 2", _today_dt(10)),
-        _make_tweet("old", _yesterday_dt()),
-    ]
-
-    mock_user = MagicMock()
-    mock_user.id = "999"
-
-    with patch("scripts.mancini.tweet_fetcher.Client") as MockClient:
-        mock_instance = MagicMock()
-        mock_instance.load_cookies = MagicMock()
-        mock_instance.get_user_by_screen_name = AsyncMock(return_value=mock_user)
-        mock_instance.get_user_tweets = AsyncMock(return_value=tweets)
-        MockClient.return_value = mock_instance
-
-        result = await fetch_mancini_tweets()
-
-    assert len(result) == 2
-
-
-# ── fetch_tweets_sync ─────────────────────────────────────────────────
-
-def test_fetch_tweets_sync_wrapper(monkeypatch, tmp_path):
-    """El wrapper síncrono funciona."""
-    cookies_file = tmp_path / "cookies.json"
-    cookies_file.write_text("{}")
-    monkeypatch.setattr(
-        "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
-    )
-
-    mock_user = MagicMock()
-    mock_user.id = "999"
-    today_tweet = _make_tweet("sync test", _today_dt())
-
-    with patch("scripts.mancini.tweet_fetcher.Client") as MockClient:
-        mock_instance = MagicMock()
-        mock_instance.load_cookies = MagicMock()
-        mock_instance.get_user_by_screen_name = AsyncMock(return_value=mock_user)
-        mock_instance.get_user_tweets = AsyncMock(return_value=[today_tweet])
-        MockClient.return_value = mock_instance
-
-        result = fetch_tweets_sync()
-
-    assert len(result) == 1
-    assert result[0]["text"] == "sync test"
+def test_fetch_tweets_sync_is_alias():
+    """fetch_tweets_sync es alias de fetch_mancini_tweets."""
+    assert fetch_tweets_sync is fetch_mancini_tweets

@@ -12,12 +12,18 @@ import re
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
+from pathlib import Path
 
 from scripts.mancini.config import DailyPlan
 
-load_dotenv()
+# Buscar .env en la raíz del proyecto (funciona desde worktrees y subcarpetas)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_env_path = _PROJECT_ROOT / ".env"
+if not _env_path.exists() and ".claude" in str(_PROJECT_ROOT):
+    _env_path = Path(str(_PROJECT_ROOT).split(".claude")[0]) / ".env"
+load_dotenv(_env_path, override=True)
 
-MODEL = os.getenv("MANCINI_PARSER_MODEL", "claude-haiku-4-5-latest")
+MODEL = os.getenv("MANCINI_PARSER_MODEL", "claude-haiku-4-5-20251001")
 
 SYSTEM_PROMPT = """\
 Eres un parser de tweets de Adam Mancini sobre futuros /ES.

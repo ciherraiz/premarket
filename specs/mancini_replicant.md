@@ -132,9 +132,9 @@ Append-only en `logs/mancini_trades.jsonl`. Cada trade:
 
 ### 7. tweet_fetcher.py + tweet_parser.py + Skill /mancini-scan
 
-**tweet_fetcher.py** — obtiene tweets vía `twikit` (session cookies, sin API key de X):
-1. Autenticación vía cookies (`X_COOKIES_FILE`) o login (`X_USERNAME`/`X_PASSWORD`)
-2. Fetch timeline de @AdamMancini4
+**tweet_fetcher.py** — obtiene tweets vía `httpx` + GraphQL API de X (session cookies):
+1. Carga cookies exportadas con Cookie-Editor (`cookies.json`)
+2. Usa GraphQL API de X (UserByScreenName + UserTweets) con bearer token público
 3. Filtrado a tweets del día (timezone ET)
 4. Retorna lista de `{id, text, created_at}`
 
@@ -150,7 +150,8 @@ Append-only en `logs/mancini_trades.jsonl`. Cada trade:
 3. Merge con plan existente si ya hay uno de hoy
 4. `save_plan()` → `outputs/mancini_plan.json`
 
-Env vars requeridas: `X_COOKIES_FILE` (o `X_USERNAME`+`X_PASSWORD`), `ANTHROPIC_API_KEY`
+Ficheros requeridos: `cookies.json` (exportado con Cookie-Editor desde x.com)
+Env vars requeridas: `ANTHROPIC_API_KEY` (opcional: `X_COOKIES_FILE` para ruta custom)
 
 ### 8. run_mancini.py — CLI
 
