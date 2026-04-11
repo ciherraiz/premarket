@@ -1,138 +1,91 @@
 ---
 name: mancini-scan
-description: Lee los tweets recientes de Adam Mancini (@AdamMancini4) via Chrome, extrae el plan del dia con niveles clave para /ES, y guarda en outputs/mancini_plan.json. Usar para cargar o actualizar el plan diario de Mancini.
+description: Obtiene tweets de @AdamMancini4 via twikit, extrae niveles con Claude Haiku, y guarda en outputs/mancini_plan.json. Usar para cargar o actualizar el plan diario de Mancini.
 ---
 
-Lee los tweets de Adam Mancini y extrae los niveles clave para la estrategia Failed Breakdown/Breakout en futuros /ES.
+Obtiene los tweets de Adam Mancini y extrae los niveles clave para la estrategia Failed Breakdown/Breakout en futuros /ES.
 
 ## Instrucciones de ejecucion
 
-### Paso 1: Navegar al perfil de Mancini
-
-Usa Chrome MCP para abrir el perfil de Adam Mancini en X:
-
-```
-mcp__Claude_in_Chrome__navigate → https://x.com/AdamMancini4
-```
-
-Espera a que cargue la pagina.
-
-### Paso 2: Extraer texto de tweets
-
-```
-mcp__Claude_in_Chrome__get_page_text
-```
-
-Esto devuelve el texto de los tweets visibles en el timeline.
-
-### Paso 3: Identificar el tweet del plan del dia
-
-Busca el **primer tweet del dia** que contenga niveles de /ES. Palabras clave tipicas:
-- "Plan today", "plan", "#ES_F"
-- "reclaim", "reclaims", "see"
-- "fail", "fails", "sell"
-- "chop"
-- Numeros de 4 digitos (niveles de precio /ES, tipicamente 5000-7000+)
-
-El tweet del plan tiene un formato como:
-```
-Plan today: 6793/88 - 6830=chop. 6809 reclaims see 6819, 6830. 6788 fails, sell 6781 (watch traps), 6766-70
-```
-
-### Paso 4: Extraer niveles estructurados
-
-Del tweet del plan, extrae:
-
-1. **key_level_upper**: el nivel que si se "reclaim" (recupera) indica LONG
-   - Busca: "X reclaims", "reclaim X", "above X"
-2. **targets_upper**: niveles objetivo alcistas tras el reclaim
-   - Busca: "see X, Y", "targets X, Y" despues del reclaim
-3. **key_level_lower**: el nivel que si "fails" (rompe) indica venta
-   - Busca: "X fails", "fail X", "sell X", "below X"
-4. **targets_lower**: niveles objetivo bajistas tras el fail
-   - Busca: numeros despues de "sell", "fails" o al final del tweet
-5. **chop_zone** (opcional): rango donde el precio oscila sin tendencia
-   - Busca: "X-Y=chop", "chop zone X-Y"
-
-**Formato especial de Mancini:**
-- "6793/88" significa 6793 o 6788 (dos niveles)
-- "6766-70" significa rango 6766 a 6770 (usa 6766 como nivel)
-- "watch traps" es una advertencia, no un nivel
-
-### Paso 5: Verificar si ya existe un plan
-
-Lee el plan actual:
-```python
-# Verificar si outputs/mancini_plan.json existe
-```
-
-- Si **no existe plan**: crear nuevo
-- Si **existe plan del mismo dia**: hacer merge (anadir nuevos targets sin perder los existentes)
-- Si **existe plan de otro dia**: sobreescribir con plan nuevo
-
-### Paso 6: Guardar el plan
+### Paso 1: Obtener tweets y parsear plan
 
 Ejecutar desde la raiz del proyecto:
 
 ```bash
 uv run python -c "
-from scripts.mancini.config import DailyPlan, save_plan, load_plan
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-plan = load_plan()
-today = 'YYYY-MM-DD'  # fecha de hoy
+from scripts.mancini.tweet_fetcher import fetch_tweets_sync
+from scripts.mancini.tweet_parser import parse_tweets_to_plan
+from scripts.mancini.config import save_plan, load_plan
 
-if plan and plan.fecha == today:
-    # Merge: anadir nuevos targets
-    plan.merge_update(
-        new_targets_upper=[...],  # nuevos targets si los hay
-        new_targets_lower=[...],
-        new_tweet='texto del tweet',
-        notes='actualizacion intraday'
-    )
+today = datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
+
+# Fetch tweets
+tweets = fetch_tweets_sync()
+if not tweets:
+    print('No se encontraron tweets de Mancini para hoy')
+    raise SystemExit(1)
+
+print(f'Encontrados {len(tweets)} tweets de hoy')
+for i, t in enumerate(tweets, 1):
+    print(f'  {i}. {t[\"text\"][:100]}...')
+
+# Parsear con Haiku
+plan = parse_tweets_to_plan(tweets, today)
+if plan is None:
+    print('Haiku determino que no hay plan nuevo hoy')
+    raise SystemExit(0)
+
+# Merge si ya existe plan de hoy
+existing = load_plan()
+if existing and existing.fecha == today:
+    for tweet in plan.raw_tweets:
+        existing.merge_update(
+            new_targets_upper=plan.targets_upper,
+            new_targets_lower=plan.targets_lower,
+            new_tweet=tweet,
+        )
+    if plan.chop_zone and not existing.chop_zone:
+        existing.chop_zone = plan.chop_zone
+    save_plan(existing)
+    plan = existing
+    print('Plan actualizado (merge con existente)')
 else:
-    # Plan nuevo
-    plan = DailyPlan(
-        fecha=today,
-        key_level_upper=XXXX,
-        targets_upper=[XXXX, XXXX],
-        key_level_lower=XXXX,
-        targets_lower=[XXXX],
-        raw_tweets=['texto del tweet'],
-        chop_zone=(XXXX, XXXX),  # o None
-    )
+    save_plan(plan)
+    print('Plan nuevo guardado')
 
-save_plan(plan)
 print(json.dumps(plan.to_dict(), indent=2))
 "
 ```
 
-### Paso 7: Confirmar y notificar
+### Paso 2: Confirmar resultado
 
-Tras guardar, mostrar resumen:
+Mostrar resumen al usuario:
 
 ```
 Plan Mancini cargado:
-  Fecha:   2026-04-10
-  Upper:   6809 -> targets 6819, 6830
-  Lower:   6781 -> targets 6766
-  Chop:    6788-6830
-  Tweets:  1
+  Fecha:   YYYY-MM-DD
+  Upper:   XXXX -> targets XXXX, XXXX
+  Lower:   XXXX -> targets XXXX
+  Chop:    XXXX-XXXX (o None)
+  Tweets:  N
 ```
 
-### Paso 8: Buscar actualizaciones intraday
+Si el plan es None (no hay plan hoy), informar al usuario.
 
-Si el skill se re-ejecuta durante el dia, busca tweets posteriores al plan que contengan:
-- Nuevos niveles ("bonus slate", "add", "targets")
-- Confirmaciones ("triggered", "hit", "reclaim was long trigger")
-- Cambios de niveles
+## Requisitos
 
-Hace merge en el plan existente sin perder los niveles previos.
+- `X_COOKIES_FILE` o `X_USERNAME` + `X_PASSWORD` en `.env` para twikit
+- `ANTHROPIC_API_KEY` en `.env` para Claude Haiku
+- No requiere Chrome MCP
 
 ## Reglas importantes
 
 - Los niveles de Mancini son siempre para futuros /ES (no SPX, no SPY)
 - Solo extraer niveles del dia actual, ignorar tweets de dias anteriores
 - Si no hay tweet de plan para hoy, informar y no crear plan
-- Si hay ambiguedad en los niveles, ser conservador y pedir confirmacion al usuario
+- Si hay ambiguedad en los niveles, mostrar raw tweets y pedir confirmacion
 - Nunca inventar niveles que no esten en el tweet
