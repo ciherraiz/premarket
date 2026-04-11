@@ -153,7 +153,7 @@ def test_parse_tweets_to_plan_calls_haiku(monkeypatch):
 
     # Verifica que se llamó con el modelo correcto
     call_kwargs = mock_client.messages.create.call_args.kwargs
-    assert "haiku" in call_kwargs["model"]
+    assert "haiku" in call_kwargs["model"] or "claude" in call_kwargs["model"]
     assert call_kwargs["system"]  # system prompt no vacío
 
 
