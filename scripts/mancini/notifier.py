@@ -55,13 +55,14 @@ def notify_breakdown(level: float, price: float, depth: float) -> bool:
 
 def notify_signal(level: float, price: float, entry: float,
                   stop: float, targets: list[float],
-                  breakdown_low: float) -> bool:
+                  breakdown_low: float,
+                  alignment: str = "") -> bool:
     """Alerta: señal de entrada — failed breakdown confirmado."""
     risk = abs(entry - stop)
     targets_str = ", ".join(_esc(str(t)) for t in targets)
     reward_1 = abs(targets[0] - entry) if targets else 0
 
-    msg = "\n".join([
+    lines = [
         "🟢 *FAILED BREAKDOWN \\— SEÑAL*",
         "",
         f"📍 Nivel: {_esc(level)} \\| Reclaim: {_esc(price)}",
@@ -71,8 +72,16 @@ def notify_signal(level: float, price: float, entry: float,
         f"🛑 *Stop:* {_esc(stop)} \\(\\-{_esc(f'{risk:.0f}')} pts\\)",
         f"🎯 *Targets:* {targets_str}",
         f"📊 R:R \\= 1:{_esc(f'{reward_1/risk:.1f}') if risk > 0 else 'N/A'}",
-    ])
-    return send_telegram(msg)
+    ]
+
+    if alignment == "MISALIGNED":
+        lines.append("")
+        lines.append("⚠️ *Contra sesgo semanal \\— solo T1*")
+    elif alignment == "ALIGNED":
+        lines.append("")
+        lines.append("✅ *Alineado con Big Picture*")
+
+    return send_telegram("\n".join(lines))
 
 
 def notify_partial_exit(price: float, pnl_pts: float,
