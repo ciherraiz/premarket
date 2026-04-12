@@ -58,6 +58,7 @@ class Trade:
     pnl_runner_pts: float | None = None
     pnl_total_pts: float | None = None
     breakdown_low: float | None = None
+    alignment: str = ""  # "ALIGNED" | "NEUTRAL" | "MISALIGNED"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -89,7 +90,9 @@ class TradeManager:
 
     def open_trade(self, direction: str, entry_price: float,
                    breakdown_low: float, targets: list[float],
-                   timestamp: str | None = None) -> Trade | None:
+                   timestamp: str | None = None,
+                   runner_mode: bool = True,
+                   alignment: str = "") -> Trade | None:
         """
         Abre un nuevo trade.
 
@@ -99,6 +102,8 @@ class TradeManager:
             breakdown_low: mínimo alcanzado durante el breakdown
             targets: lista de niveles objetivo
             timestamp: ISO timestamp (auto si None)
+            runner_mode: si False, solo Target 1 (cierre 100%, sin runner)
+            alignment: "ALIGNED", "NEUTRAL" o "MISALIGNED"
 
         Returns:
             Trade creado, o None si no se puede abrir.
@@ -115,6 +120,10 @@ class TradeManager:
         # SHORT: targets descendentes (primero el más cercano abajo)
         sorted_targets = sorted(targets, reverse=(direction == "SHORT"))
 
+        # MISALIGNED: solo Target 1, sin runner
+        if not runner_mode and sorted_targets:
+            sorted_targets = [sorted_targets[0]]
+
         trade = Trade(
             id=str(uuid.uuid4()),
             direction=direction,
@@ -123,6 +132,7 @@ class TradeManager:
             stop_price=stop,
             targets=sorted_targets,
             breakdown_low=breakdown_low,
+            alignment=alignment,
         )
         self.trades.append(trade)
         return trade

@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from scripts.mancini.config import DailyPlan, save_plan
+from scripts.mancini.config import DailyPlan, save_plan, save_weekly
 from scripts.mancini.detector import State, save_detectors, FailedBreakdownDetector
 from scripts.mancini.trade_manager import TradeStatus
 from scripts.mancini.monitor import ManciniMonitor
@@ -40,9 +40,15 @@ def sample_plan(plan_path):
 
 
 @pytest.fixture
-def monitor(plan_path, state_path):
+def weekly_path(tmp_path):
+    return tmp_path / "mancini_weekly.json"
+
+
+@pytest.fixture
+def monitor(plan_path, state_path, weekly_path):
     """Monitor sin client (para tests sin TastyTrade)."""
-    m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path)
+    m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
+                       weekly_path=weekly_path)
     return m
 
 
@@ -231,3 +237,150 @@ def test_close_session_expires_detectors(monitor, sample_plan):
 
     for d in monitor.detectors:
         assert d.state == State.EXPIRED
+
+
+# ── Weekly alignment ──────────────────────────────────────────────────
+
+def test_calc_weekly_bias_bullish(monitor, weekly_path):
+    """Plan semanal con notes alcista → BULLISH."""
+    weekly = DailyPlan(
+        fecha="2026-04-14",
+        key_level_upper=6817,
+        targets_upper=[6903, 6950],
+        key_level_lower=6793,
+        targets_lower=[],
+        notes="Sesgo: alcista. Bull flag breakout.",
+    )
+    save_weekly(weekly, weekly_path)
+    monitor.weekly = weekly
+    assert monitor.calc_weekly_bias() == "BULLISH"
+
+
+def test_calc_weekly_bias_bearish(monitor, weekly_path):
+    """Plan semanal bajista → BEARISH."""
+    weekly = DailyPlan(
+        fecha="2026-04-14",
+        key_level_upper=6800,
+        targets_upper=[],
+        key_level_lower=6750,
+        targets_lower=[6700, 6650],
+        notes="Sesgo: bajista. Breakdown confirmado.",
+    )
+    save_weekly(weekly, weekly_path)
+    monitor.weekly = weekly
+    assert monitor.calc_weekly_bias() == "BEARISH"
+
+
+def test_calc_weekly_bias_neutral_no_weekly(monitor):
+    """Sin plan semanal → NEUTRAL."""
+    assert monitor.calc_weekly_bias() == "NEUTRAL"
+
+
+def test_calc_weekly_bias_fallback_targets(monitor):
+    """Sin palabra clave pero targets solo alcistas → BULLISH."""
+    monitor.weekly = DailyPlan(
+        fecha="2026-04-14",
+        key_level_upper=6817,
+        targets_upper=[6903],
+        key_level_lower=6793,
+        targets_lower=[],
+        notes="Plan para la semana.",
+    )
+    assert monitor.calc_weekly_bias() == "BULLISH"
+
+
+def test_calc_alignment_aligned(monitor):
+    """LONG con sesgo BULLISH → ALIGNED."""
+    monitor.weekly = DailyPlan(
+        fecha="2026-04-14", key_level_upper=6817, targets_upper=[6903],
+        key_level_lower=6793, targets_lower=[],
+        notes="Sesgo: alcista",
+    )
+    assert monitor.calc_alignment("LONG") == "ALIGNED"
+
+
+def test_calc_alignment_misaligned(monitor):
+    """SHORT con sesgo BULLISH → MISALIGNED."""
+    monitor.weekly = DailyPlan(
+        fecha="2026-04-14", key_level_upper=6817, targets_upper=[6903],
+        key_level_lower=6793, targets_lower=[],
+        notes="Sesgo: alcista",
+    )
+    assert monitor.calc_alignment("SHORT") == "MISALIGNED"
+
+
+def test_calc_alignment_neutral(monitor):
+    """Sin weekly → NEUTRAL."""
+    assert monitor.calc_alignment("LONG") == "NEUTRAL"
+
+
+def test_misaligned_trade_only_t1(monitor, sample_plan, mock_notifier, weekly_path):
+    """Trade MISALIGNED solo tiene Target 1 (sin runner)."""
+    # Weekly bajista → LONG será MISALIGNED
+    weekly = DailyPlan(
+        fecha="2026-04-14", key_level_upper=6800, targets_upper=[],
+        key_level_lower=6750, targets_lower=[6700],
+        notes="Sesgo: bajista",
+    )
+    save_weekly(weekly, weekly_path)
+    monitor.load_state()
+
+    # Secuencia: breakdown → recovery → signal
+    monitor.process_tick(6776, "2026-04-10T14:00:00Z")
+    monitor.process_tick(6783, "2026-04-10T14:01:00Z")
+    monitor.process_tick(6784, "2026-04-10T14:02:00Z")
+    monitor.process_tick(6785, "2026-04-10T14:03:00Z")
+
+    trade = monitor.trade_manager.active_trade()
+    assert trade is not None
+    assert trade.alignment == "MISALIGNED"
+    assert len(trade.targets) == 1  # Solo T1, sin runner
+
+
+def test_aligned_trade_extended_targets(monitor, sample_plan, mock_notifier, weekly_path):
+    """Trade ALIGNED enriquece targets con weekly."""
+    # Weekly alcista con target 6950 (mayor que daily 6830)
+    weekly = DailyPlan(
+        fecha="2026-04-14", key_level_upper=6817,
+        targets_upper=[6903, 6950],
+        key_level_lower=6793, targets_lower=[],
+        notes="Sesgo: alcista",
+    )
+    save_weekly(weekly, weekly_path)
+    monitor.load_state()
+
+    # Secuencia: breakdown → recovery → signal
+    monitor.process_tick(6776, "2026-04-10T14:00:00Z")
+    monitor.process_tick(6783, "2026-04-10T14:01:00Z")
+    monitor.process_tick(6784, "2026-04-10T14:02:00Z")
+    monitor.process_tick(6785, "2026-04-10T14:03:00Z")
+
+    trade = monitor.trade_manager.active_trade()
+    assert trade is not None
+    assert trade.alignment == "ALIGNED"
+    # Daily targets [6819, 6830] + weekly [6903] (primer target > 6830)
+    assert 6903 in trade.targets
+    assert trade.targets == [6819, 6830, 6903]
+
+
+def test_alignment_in_notification(monitor, sample_plan, mock_notifier, weekly_path):
+    """Notificación incluye alignment."""
+    weekly = DailyPlan(
+        fecha="2026-04-14", key_level_upper=6817, targets_upper=[6903],
+        key_level_lower=6793, targets_lower=[],
+        notes="Sesgo: alcista",
+    )
+    save_weekly(weekly, weekly_path)
+    monitor.load_state()
+
+    # Secuencia completa hasta SIGNAL
+    monitor.process_tick(6776, "2026-04-10T14:00:00Z")
+    monitor.process_tick(6783, "2026-04-10T14:01:00Z")
+    monitor.process_tick(6784, "2026-04-10T14:02:00Z")
+    monitor.process_tick(6785, "2026-04-10T14:03:00Z")
+
+    # Verificar que notify_signal recibió alignment
+    mock_notifier.notify_signal.assert_called_once()
+    call_kwargs = mock_notifier.notify_signal.call_args
+    assert call_kwargs.kwargs.get("alignment") == "ALIGNED" or \
+           (len(call_kwargs.args) > 6 and call_kwargs.args[6] == "ALIGNED")

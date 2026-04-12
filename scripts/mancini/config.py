@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PLAN_PATH = Path("outputs/mancini_plan.json")
+WEEKLY_PLAN_PATH = Path("outputs/mancini_weekly.json")
 
 
 @dataclass
@@ -84,3 +85,13 @@ def load_plan(path: Path = PLAN_PATH) -> DailyPlan | None:
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
     return DailyPlan.from_dict(data)
+
+
+def save_weekly(plan: DailyPlan, path: Path = WEEKLY_PLAN_PATH) -> None:
+    """Persiste el plan semanal en JSON."""
+    save_plan(plan, path)
+
+
+def load_weekly(path: Path = WEEKLY_PLAN_PATH) -> DailyPlan | None:
+    """Carga el plan semanal desde JSON. Retorna None si no existe."""
+    return load_plan(path)
