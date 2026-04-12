@@ -263,6 +263,54 @@ def fetch_mancini_tweets(max_tweets: int = 20) -> list[dict]:
     return result
 
 
+def fetch_mancini_weekend_tweets(max_tweets: int = 40) -> list[dict]:
+    """Obtiene tweets del fin de semana que contengan 'Big Picture'."""
+    cookies = _load_cookies()
+    client = _build_client(cookies)
+
+    user_id = _get_user_id(client, MANCINI_SCREEN_NAME)
+    raw_tweets = _get_user_tweets(client, user_id, count=max_tweets)
+
+    now = datetime.now(ET)
+    # Buscar tweets del sábado y domingo de este fin de semana
+    # Si hoy es sábado (5) o domingo (6), buscar hoy
+    # Si hoy es lunes-viernes, buscar el sábado/domingo pasados
+    weekday = now.weekday()
+    if weekday == 5:  # sábado
+        weekend_dates = {now.strftime("%Y-%m-%d")}
+    elif weekday == 6:  # domingo
+        from datetime import timedelta
+        weekend_dates = {
+            (now - timedelta(days=1)).strftime("%Y-%m-%d"),
+            now.strftime("%Y-%m-%d"),
+        }
+    else:
+        from datetime import timedelta
+        days_since_saturday = weekday + 2
+        sat = now - timedelta(days=days_since_saturday)
+        sun = sat + timedelta(days=1)
+        weekend_dates = {sat.strftime("%Y-%m-%d"), sun.strftime("%Y-%m-%d")}
+
+    result = []
+    for tweet in raw_tweets:
+        dt = _parse_x_datetime(tweet["created_at"])
+        if dt is None:
+            continue
+        tweet_date = dt.astimezone(ET).strftime("%Y-%m-%d")
+        if tweet_date not in weekend_dates:
+            continue
+        # Filtrar solo tweets con contenido Big Picture
+        text_lower = tweet["text"].lower()
+        if "big picture" in text_lower or "plan next week" in text_lower:
+            result.append({
+                "id": tweet["id"],
+                "text": tweet["text"],
+                "created_at": dt.isoformat(),
+            })
+
+    return result
+
+
 # Alias para compatibilidad con el skill (era async, ahora es sync)
 fetch_tweets_sync = fetch_mancini_tweets
 

@@ -122,3 +122,33 @@ def test_notify_session_summary_negative(mock_telegram):
     assert result is True
     msg = mock_telegram.call_args[0][0]
     assert "8" in msg
+
+
+def test_notify_weekly_plan(mock_telegram):
+    result = notifier.notify_weekly_plan({
+        "fecha": "2026-04-14",
+        "key_level_upper": 6817,
+        "key_level_lower": 6793,
+        "targets_upper": [6903, 6950, 7068],
+        "notes": "Sesgo: alcista",
+    })
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "Big Picture" in msg
+    assert "6817" in msg
+    assert "6793" in msg
+    assert "6903" in msg
+    assert "alcista" in msg
+
+
+def test_notify_weekly_plan_no_targets(mock_telegram):
+    result = notifier.notify_weekly_plan({
+        "fecha": "2026-04-14",
+        "key_level_upper": 6817,
+        "key_level_lower": 6793,
+        "targets_upper": [],
+        "notes": "",
+    })
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "Big Picture" in msg
