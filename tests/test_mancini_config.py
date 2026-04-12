@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from scripts.mancini.config import DailyPlan, save_plan, load_plan
+from scripts.mancini.config import DailyPlan, save_plan, load_plan, save_weekly, load_weekly
 
 
 # ── DailyPlan basics ────────────────────────────────────────────────
@@ -195,3 +195,32 @@ def test_save_plan_creates_parent_dirs(tmp_path):
     )
     save_plan(plan, path=path)
     assert path.exists()
+
+
+# ── Weekly plan ────────────────────────────────────────────────────────
+
+def test_save_and_load_weekly(tmp_path):
+    path = tmp_path / "weekly.json"
+    plan = DailyPlan(
+        fecha="2026-04-14",  # lunes de la semana
+        key_level_upper=6817,
+        targets_upper=[6903, 6950, 7068],
+        key_level_lower=6793,
+        targets_lower=[],
+        notes="Sesgo: alcista mientras aguante 6793",
+    )
+    save_weekly(plan, path=path)
+    assert path.exists()
+
+    loaded = load_weekly(path=path)
+    assert loaded is not None
+    assert loaded.fecha == "2026-04-14"
+    assert loaded.key_level_upper == 6817
+    assert loaded.key_level_lower == 6793
+    assert loaded.targets_upper == [6903, 6950, 7068]
+    assert loaded.notes == "Sesgo: alcista mientras aguante 6793"
+
+
+def test_load_weekly_nonexistent(tmp_path):
+    path = tmp_path / "nope.json"
+    assert load_weekly(path=path) is None

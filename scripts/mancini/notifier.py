@@ -121,6 +121,26 @@ def notify_trade_closed(reason: str, entry: float, exit_price: float,
     return send_telegram("\n".join(lines))
 
 
+def notify_weekly_plan(plan: dict) -> bool:
+    """Alerta: Big Picture View semanal cargado."""
+    week = _esc(plan.get("fecha", "N/A"))
+    upper = _esc(plan.get("key_level_upper", "N/A"))
+    lower = _esc(plan.get("key_level_lower", "N/A"))
+    targets = ", ".join(_esc(str(t)) for t in plan.get("targets_upper", []))
+    notes = _esc(plan.get("notes", ""))
+
+    msg = "\n".join([
+        f"📊 *Big Picture \\| Semana {week}*",
+        "",
+        f"🟢 *Soporte clave:* {upper}",
+        f"🔴 *Mínimo:* {lower}",
+        f"🎯 *Targets semana:* {targets}",
+        "",
+        f"📝 {notes}",
+    ])
+    return send_telegram(msg.strip())
+
+
 def notify_session_summary(fecha: str, trades_count: int,
                            total_pnl: float) -> bool:
     """Alerta: resumen de la sesión al finalizar."""

@@ -17,6 +17,7 @@ from scripts.mancini.tweet_fetcher import (
     _build_client,
     _parse_x_datetime,
     fetch_mancini_tweets,
+    fetch_mancini_weekend_tweets,
     fetch_tweets_sync,
     ET,
 )
@@ -204,3 +205,105 @@ def test_fetch_tweets_empty_timeline(tmp_path, monkeypatch):
 def test_fetch_tweets_sync_is_alias():
     """fetch_tweets_sync es alias de fetch_mancini_tweets."""
     assert fetch_tweets_sync is fetch_mancini_tweets
+
+
+# ── fetch_mancini_weekend_tweets ──────────────────────────────────────
+
+def _saturday_x_date(hour=12) -> str:
+    """Genera fecha en formato X para el sábado más reciente."""
+    now = datetime.now(ET)
+    days_since_sat = (now.weekday() + 2) % 7  # 0=lunes → sat=5 días atrás
+    if now.weekday() == 5:
+        days_since_sat = 0
+    sat = now - timedelta(days=days_since_sat)
+    sat = sat.replace(hour=hour, minute=0, second=0, microsecond=0)
+    utc = sat.astimezone(ZoneInfo("UTC"))
+    return utc.strftime("%a %b %d %H:%M:%S +0000 %Y")
+
+
+def _make_graphql_response(tweets_data: list[dict]) -> MagicMock:
+    """Crea mock de respuesta GraphQL con tweets."""
+    entries = []
+    for t in tweets_data:
+        entries.append({"content": {
+            "entryType": "TimelineTimelineItem",
+            "itemContent": {"tweet_results": {"result": {"legacy": {
+                "id_str": t["id"],
+                "full_text": t["text"],
+                "created_at": t["created_at"],
+            }}}},
+        }})
+    resp = MagicMock()
+    resp.json.return_value = {
+        "data": {"user": {"result": {"timeline_v2": {"timeline": {"instructions": [{
+            "type": "TimelineAddEntries", "entries": entries,
+        }]}}}}}
+    }
+    return resp
+
+
+def test_fetch_weekend_tweets_filters_big_picture(tmp_path, monkeypatch):
+    """Solo retorna tweets de fin de semana con 'Big Picture'."""
+    cookies_file = tmp_path / "cookies.json"
+    cookies_file.write_text(json.dumps([
+        {"name": "ct0", "value": "abc"},
+        {"name": "auth_token", "value": "xyz"},
+    ]))
+    monkeypatch.setattr(
+        "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
+    )
+
+    mock_user_resp = MagicMock()
+    mock_user_resp.json.return_value = {
+        "data": {"user": {"result": {"rest_id": "12345"}}}
+    }
+
+    sat_date = _saturday_x_date()
+    mock_tweets_resp = _make_graphql_response([
+        {"id": "1", "text": "Big Picture View: Bulls hold 6817", "created_at": sat_date},
+        {"id": "2", "text": "Random weekend thought", "created_at": sat_date},
+        {"id": "3", "text": "Plan Next Week: 6903 target", "created_at": sat_date},
+    ])
+
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build:
+        mock_client = MagicMock()
+        mock_client.get.side_effect = [mock_user_resp, mock_tweets_resp]
+        mock_build.return_value = mock_client
+
+        result = fetch_mancini_weekend_tweets()
+
+    # Solo Big Picture y Plan Next Week, no el random
+    assert len(result) == 2
+    assert any("Big Picture" in t["text"] for t in result)
+    assert any("Plan Next Week" in t["text"] for t in result)
+
+
+def test_fetch_weekend_tweets_no_big_picture(tmp_path, monkeypatch):
+    """Sin tweets Big Picture devuelve lista vacía."""
+    cookies_file = tmp_path / "cookies.json"
+    cookies_file.write_text(json.dumps([
+        {"name": "ct0", "value": "abc"},
+        {"name": "auth_token", "value": "xyz"},
+    ]))
+    monkeypatch.setattr(
+        "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
+    )
+
+    mock_user_resp = MagicMock()
+    mock_user_resp.json.return_value = {
+        "data": {"user": {"result": {"rest_id": "12345"}}}
+    }
+
+    sat_date = _saturday_x_date()
+    mock_tweets_resp = _make_graphql_response([
+        {"id": "1", "text": "Enjoying the weekend", "created_at": sat_date},
+    ])
+
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build:
+        mock_client = MagicMock()
+        mock_client.get.side_effect = [mock_user_resp, mock_tweets_resp]
+        mock_build.return_value = mock_client
+
+        result = fetch_mancini_weekend_tweets()
+
+    assert result == []
