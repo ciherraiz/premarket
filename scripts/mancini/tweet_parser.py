@@ -76,6 +76,59 @@ runners, comentarios de volatilidad sin niveles nuevos), responde:
 
 Solo extrae niveles para futuros /ES. Ignora otros instrumentos."""
 
+WEEKLY_SYSTEM_PROMPT = """\
+Eres un parser del tweet "Big Picture View" de Adam Mancini sobre futuros /ES.
+Este tweet se publica los fines de semana y establece el marco semanal.
+
+## Formato de salida
+
+Responde SOLO con JSON válido (sin markdown, sin explicaciones):
+
+{
+  "key_level_upper": 6817,
+  "targets_upper": [6903, 6950, 7068],
+  "key_level_lower": 6793,
+  "targets_lower": [],
+  "chop_zone": null,
+  "notes": "Sesgo: alcista. Resumen de la semana y contexto."
+}
+
+## Reglas de extracción
+
+- "Bulls want to hold X" / "hold X" → key_level_upper (soporte clave alcista)
+- "X lowest" / "X is floor" → key_level_lower (soporte mínimo, si falla = retrace)
+- "keeps X, Y live" / "targets X, Y" → targets_upper (ascendente)
+- "X fails, we retrace" / "X fails" → confirma key_level_lower
+- "Dip, then X" → incluir X en targets_upper
+- "chop between X-Y" → chop_zone como [X, Y]
+- Si no hay chop zone → chop_zone: null
+
+## Campo notes (importante)
+
+En notes incluye:
+1. Sesgo semanal: "alcista", "bajista" o "neutral"
+2. Resumen breve de la semana pasada (qué patrón se formó)
+3. Contexto relevante para la operativa de la semana
+
+## Notación especial de Mancini
+
+- "6793/88" = dos niveles: 6793 y 6788
+- "6766-70" = rango 6766 a 6770 (usa 6766)
+- "6900-05" = rango 6900 a 6905 (usa 6900)
+
+## Si no hay Big Picture claro
+
+{
+  "key_level_upper": null,
+  "targets_upper": [],
+  "key_level_lower": null,
+  "targets_lower": [],
+  "chop_zone": null,
+  "notes": "descripción de por qué no hay plan semanal"
+}
+
+Solo extrae niveles para futuros /ES. Ignora otros instrumentos."""
+
 
 def parse_tweets_to_plan(tweets: list[dict], fecha: str) -> DailyPlan | None:
     """Envía tweets a Haiku y devuelve DailyPlan o None si no hay plan."""
@@ -138,3 +191,32 @@ def _parse_response(
         chop_zone=chop,
         notes=data.get("notes", ""),
     )
+
+
+def parse_weekly_tweets(
+    tweets: list[dict], week_start: str
+) -> DailyPlan | None:
+    """Parsea tweets Big Picture View en un plan semanal."""
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY no configurada en .env")
+
+    client = Anthropic(api_key=api_key)
+
+    lines = [
+        "Tweet 'Big Picture View' de @AdamMancini4 (fin de semana):", ""
+    ]
+    for i, tweet in enumerate(tweets, 1):
+        lines.append(f"{i}. [{tweet['created_at']}] {tweet['text']}")
+    user_message = "\n".join(lines)
+
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=500,
+        system=WEEKLY_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+
+    content = response.content[0].text
+    raw_tweets = [t["text"] for t in tweets]
+    return _parse_response(content, week_start, raw_tweets)

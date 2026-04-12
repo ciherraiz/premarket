@@ -11,6 +11,7 @@ import pytest
 
 from scripts.mancini.tweet_parser import (
     parse_tweets_to_plan,
+    parse_weekly_tweets,
     _build_user_message,
     _parse_response,
 )
@@ -189,3 +190,76 @@ def test_parse_tweets_to_plan_no_plan_day(monkeypatch):
         )
 
     assert plan is None
+
+
+# ── parse_weekly_tweets ───────────────────────────────────────────────
+
+def test_parse_weekly_tweets_ok(monkeypatch):
+    """Parsea Big Picture View correctamente."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-123")
+
+    haiku_response = json.dumps({
+        "key_level_upper": 6817,
+        "targets_upper": [6903, 6950, 7068],
+        "key_level_lower": 6793,
+        "targets_lower": [],
+        "chop_zone": None,
+        "notes": "Sesgo: alcista. Bull flag breakout, +300 pts semana pasada.",
+    })
+
+    mock_msg = MagicMock()
+    mock_msg.content = [MagicMock(text=haiku_response)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_msg
+
+    with patch("scripts.mancini.tweet_parser.Anthropic", return_value=mock_client):
+        tweets = [{
+            "text": "Big Picture View: Bulls want to hold 6817, 6793 lowest.",
+            "created_at": "2026-04-11T14:00:00",
+        }]
+        plan = parse_weekly_tweets(tweets, "2026-04-14")
+
+    assert plan is not None
+    assert plan.fecha == "2026-04-14"
+    assert plan.key_level_upper == 6817
+    assert plan.key_level_lower == 6793
+    assert plan.targets_upper == [6903, 6950, 7068]
+    assert "alcista" in plan.notes.lower()
+
+    # Verifica que usa el WEEKLY_SYSTEM_PROMPT
+    call_kwargs = mock_client.messages.create.call_args.kwargs
+    assert "Big Picture" in call_kwargs["system"]
+
+
+def test_parse_weekly_tweets_no_plan(monkeypatch):
+    """Sin Big Picture claro devuelve None."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-123")
+
+    haiku_response = json.dumps({
+        "key_level_upper": None,
+        "targets_upper": [],
+        "key_level_lower": None,
+        "targets_lower": [],
+        "chop_zone": None,
+        "notes": "No es un Big Picture View",
+    })
+
+    mock_msg = MagicMock()
+    mock_msg.content = [MagicMock(text=haiku_response)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_msg
+
+    with patch("scripts.mancini.tweet_parser.Anthropic", return_value=mock_client):
+        plan = parse_weekly_tweets(
+            [{"text": "Random tweet", "created_at": "2026-04-11T10:00:00"}],
+            "2026-04-14",
+        )
+
+    assert plan is None
+
+
+def test_parse_weekly_tweets_no_api_key(monkeypatch):
+    """Sin API key lanza RuntimeError."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        parse_weekly_tweets([], "2026-04-14")
