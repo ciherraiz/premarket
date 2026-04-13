@@ -31,10 +31,13 @@ from generate_scorecard import print_combined_scorecard, print_scorecard
 
 
 def _fecha_ayer(fecha_hoy: str) -> str:
-    """Devuelve la fecha del día anterior en formato YYYY-MM-DD (sin lógica de festivos)."""
+    """Devuelve la fecha del último día laborable anterior (salta fines de semana)."""
     from datetime import date, timedelta
-    d = date.fromisoformat(fecha_hoy)
-    return str(d - timedelta(days=1))
+    d = date.fromisoformat(fecha_hoy) - timedelta(days=1)
+    # Saltar fin de semana: domingo→viernes, sábado→viernes
+    while d.weekday() >= 5:  # 5=sábado, 6=domingo
+        d -= timedelta(days=1)
+    return str(d)
 
 
 def run_premarket_phase(out: Path) -> dict:
@@ -128,7 +131,7 @@ def run_premarket_phase(out: Path) -> dict:
           f"D={d_score}  V={v_score}")
 
     # Paso 3: rellenar outcomes del día anterior y guardar registro de hoy
-    es_prev_close_value = data.get("es_prev", {}).get("prev_close")
+    es_prev_close_value = data.get("es_prev", {}).get("es_prev_close")
     fecha_hoy = data.get("fecha", "")
     if es_prev_close_value and fecha_hoy:
         n = fill_outcomes(es_prev_close_value, _fecha_ayer(fecha_hoy))
