@@ -39,7 +39,7 @@ ET = ZoneInfo("America/New_York")
 # ── Constantes ──────────────────────────────────────────────────────
 POLL_INTERVAL_S = 60
 SESSION_START_HOUR = 7   # 07:00 ET (13:00 CEST)
-SESSION_END_HOUR = 11    # 11:00 ET
+SESSION_END_HOUR = 16    # 16:00 ET (22:00 CEST) — cierre mercado regular
 
 
 def _now_et() -> datetime:
