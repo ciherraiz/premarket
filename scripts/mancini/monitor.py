@@ -135,8 +135,15 @@ class ManciniMonitor:
                 # Detectar nuevos targets
                 new_up = set(self.plan.targets_upper) - set(old_plan.targets_upper)
                 new_down = set(self.plan.targets_lower) - set(old_plan.targets_lower)
-                if new_up or new_down:
+                new_upper = self.plan.key_level_upper != old_plan.key_level_upper
+                new_lower = self.plan.key_level_lower != old_plan.key_level_lower
+                if new_up or new_down or new_upper or new_lower:
                     _log(f"Plan actualizado — nuevos targets: up={new_up} down={new_down}")
+                    notifier.notify_plan_loaded(self.plan.to_dict())
+                    # Reiniciar detectores si cambiaron los niveles clave
+                    if new_upper or new_lower:
+                        _log("Niveles clave cambiaron — reiniciando detectores")
+                        self._init_detectors()
 
     def poll_es(self) -> float | None:
         """Obtiene precio actual de /ES. Retorna None si falla."""
@@ -336,6 +343,9 @@ class ManciniMonitor:
             _log(f"Weekly: upper={self.weekly.key_level_upper} lower={self.weekly.key_level_lower} sesgo={bias}")
         else:
             _log(f"Weekly: no cargado (sesgo={bias})")
+
+        # Enviar plan a Telegram al arrancar
+        notifier.notify_plan_loaded(self.plan.to_dict())
 
         try:
             while True:

@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from scripts.mancini.tweet_fetcher import fetch_tweets_sync
 from scripts.mancini.tweet_parser import parse_tweets_to_plan
 from scripts.mancini.config import save_plan, load_plan
+from scripts.mancini import notifier
 
 today = datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%d')
 
@@ -41,7 +42,9 @@ if plan is None:
 
 # Merge si ya existe plan de hoy
 existing = load_plan()
+is_update = False
 if existing and existing.fecha == today:
+    old_targets = set(existing.targets_upper + existing.targets_lower)
     for tweet in plan.raw_tweets:
         existing.merge_update(
             new_targets_upper=plan.targets_upper,
@@ -51,11 +54,19 @@ if existing and existing.fecha == today:
     if plan.chop_zone and not existing.chop_zone:
         existing.chop_zone = plan.chop_zone
     save_plan(existing)
+    new_targets = set(existing.targets_upper + existing.targets_lower)
+    is_update = new_targets != old_targets
     plan = existing
     print('Plan actualizado (merge con existente)')
 else:
     save_plan(plan)
+    is_update = True
     print('Plan nuevo guardado')
+
+# Notificar a Telegram si hay cambios
+if is_update:
+    notifier.notify_plan_loaded(plan.to_dict())
+    print('Notificacion Telegram enviada')
 
 print(json.dumps(plan.to_dict(), indent=2))
 "
