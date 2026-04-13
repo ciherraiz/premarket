@@ -31,7 +31,12 @@ def cmd_monitor(args) -> None:
     from scripts.tastytrade_client import TastyTradeClient
 
     client = TastyTradeClient()
-    monitor = ManciniMonitor(client=client, poll_interval=args.interval)
+    kwargs = {"client": client, "poll_interval": args.interval}
+    if args.start is not None:
+        kwargs["session_start"] = args.start
+    if args.end is not None:
+        kwargs["session_end"] = args.end
+    monitor = ManciniMonitor(**kwargs)
     monitor.run()
 
 
@@ -99,6 +104,10 @@ def main() -> None:
     p_monitor = sub.add_parser("monitor", help="Arranca polling /ES")
     p_monitor.add_argument("--interval", type=int, default=60,
                            help="Intervalo de polling en segundos (default: 60)")
+    p_monitor.add_argument("--start", type=int, default=None,
+                           help="Hora inicio sesión ET (default: 7)")
+    p_monitor.add_argument("--end", type=int, default=None,
+                           help="Hora fin sesión ET (default: 11)")
 
     # status
     sub.add_parser("status", help="Muestra estado actual")

@@ -38,7 +38,7 @@ ET = ZoneInfo("America/New_York")
 
 # ── Constantes ──────────────────────────────────────────────────────
 POLL_INTERVAL_S = 60
-SESSION_START_HOUR = 8   # 08:00 ET
+SESSION_START_HOUR = 7   # 07:00 ET (13:00 CEST)
 SESSION_END_HOUR = 11    # 11:00 ET
 
 
@@ -56,12 +56,16 @@ class ManciniMonitor:
 
     def __init__(self, client=None, poll_interval: int = POLL_INTERVAL_S,
                  plan_path: Path = PLAN_PATH, state_path: Path = STATE_PATH,
-                 weekly_path: Path = WEEKLY_PLAN_PATH):
+                 weekly_path: Path = WEEKLY_PLAN_PATH,
+                 session_start: int = SESSION_START_HOUR,
+                 session_end: int = SESSION_END_HOUR):
         self.client = client
         self.poll_interval = poll_interval
         self.plan_path = plan_path
         self.state_path = state_path
         self.weekly_path = weekly_path
+        self.session_start = session_start
+        self.session_end = session_end
         self.plan: DailyPlan | None = None
         self.weekly: DailyPlan | None = None
         self.detectors: list[FailedBreakdownDetector] = []
@@ -352,13 +356,13 @@ class ManciniMonitor:
                 now = _now_et()
 
                 # Auto-finalizar
-                if now.hour >= SESSION_END_HOUR:
+                if now.hour >= self.session_end:
                     self.close_session()
                     break
 
-                # Esperar a SESSION_START_HOUR
-                if now.hour < SESSION_START_HOUR:
-                    _log(f"Esperando inicio de sesión ({SESSION_START_HOUR}:00 ET)...")
+                # Esperar a session_start
+                if now.hour < self.session_start:
+                    _log(f"Esperando inicio de sesión ({self.session_start}:00 ET)...")
                     time.sleep(self.poll_interval)
                     continue
 
