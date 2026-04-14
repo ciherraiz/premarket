@@ -181,11 +181,14 @@ def _parse_response(
     if chop is not None:
         chop = tuple(chop)
 
+    upper = data.get("key_level_upper")
+    lower = data.get("key_level_lower")
+
     return DailyPlan(
         fecha=fecha,
-        key_level_upper=float(data["key_level_upper"]),
+        key_level_upper=float(upper) if upper is not None else None,
         targets_upper=[float(t) for t in data.get("targets_upper", [])],
-        key_level_lower=float(data["key_level_lower"]),
+        key_level_lower=float(lower) if lower is not None else None,
         targets_lower=[float(t) for t in data.get("targets_lower", [])],
         raw_tweets=raw_tweets,
         chop_zone=chop,
