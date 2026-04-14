@@ -21,9 +21,9 @@ class DailyPlan:
     """Plan diario extraído de los tweets de Mancini."""
 
     fecha: str  # YYYY-MM-DD
-    key_level_upper: float
+    key_level_upper: float | None
     targets_upper: list[float]
-    key_level_lower: float
+    key_level_lower: float | None
     targets_lower: list[float]
     raw_tweets: list[str] = field(default_factory=list)
     chop_zone: tuple[float, float] | None = None
