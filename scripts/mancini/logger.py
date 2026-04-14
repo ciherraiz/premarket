@@ -5,11 +5,35 @@ Sigue el mismo patrón que scripts/log_history.py.
 """
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.mancini.trade_manager import Trade
 
 TRADES_LOG_PATH = Path("logs/mancini_trades.jsonl")
+SCAN_LOG_PATH = Path("logs/mancini_scans.jsonl")
+
+
+def append_scan_result(
+    status: str,
+    tweets_found: int = 0,
+    plan_updated: bool = False,
+    reason: str = "",
+    fecha: str = "",
+    path: Path = SCAN_LOG_PATH,
+) -> None:
+    """Registra el resultado de una ejecución del scan."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "tweets_found": tweets_found,
+        "plan_updated": plan_updated,
+        "reason": reason,
+        "fecha": fecha,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def append_trade(trade: Trade, path: Path = TRADES_LOG_PATH) -> None:

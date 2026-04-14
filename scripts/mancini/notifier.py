@@ -150,6 +150,26 @@ def notify_weekly_plan(plan: dict) -> bool:
     return send_telegram(msg.strip())
 
 
+def notify_scan_failure(reason: str) -> bool:
+    """Alerta: el scan de tweets falló o no encontró plan."""
+    msg = "\n".join([
+        "⚠️ *Mancini Scan FAILED*",
+        "",
+        f"📝 {_esc(reason)}",
+    ])
+    return send_telegram(msg)
+
+
+def notify_monitor_crash(error: str) -> bool:
+    """Alerta: el monitor se ha caído inesperadamente."""
+    msg = "\n".join([
+        "🔴 *Mancini Monitor CRASHED*",
+        "",
+        f"💥 {_esc(error)}",
+    ])
+    return send_telegram(msg)
+
+
 def notify_session_summary(fecha: str, trades_count: int,
                            total_pnl: float) -> bool:
     """Alerta: resumen de la sesión al finalizar."""
