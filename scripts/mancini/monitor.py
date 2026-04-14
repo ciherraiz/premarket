@@ -351,36 +351,58 @@ class ManciniMonitor:
         # Enviar plan a Telegram al arrancar
         notifier.notify_plan_loaded(self.plan.to_dict())
 
+        consecutive_errors = 0
+        MAX_CONSECUTIVE_ERRORS = 5
+
         try:
             while True:
-                now = _now_et()
+                try:
+                    now = _now_et()
 
-                # Auto-finalizar
-                if now.hour >= self.session_end:
-                    self.close_session()
-                    break
+                    # Auto-finalizar
+                    if now.hour >= self.session_end:
+                        self.close_session()
+                        break
 
-                # Esperar a session_start
-                if now.hour < self.session_start:
-                    _log(f"Esperando inicio de sesión ({self.session_start}:00 ET)...")
+                    # Esperar a session_start
+                    if now.hour < self.session_start:
+                        _log(f"Esperando inicio de sesión ({self.session_start}:00 ET)...")
+                        time.sleep(self.poll_interval)
+                        continue
+
+                    # Recargar plan si cambió
+                    self._check_plan_updates()
+
+                    # Poll
+                    price = self.poll_es()
+                    if price is None:
+                        time.sleep(self.poll_interval)
+                        continue
+
+                    _log(f"ES={price:.2f}")
+                    self.process_tick(price)
+                    self.save_state()
+
+                    consecutive_errors = 0
                     time.sleep(self.poll_interval)
-                    continue
 
-                # Recargar plan si cambió
-                self._check_plan_updates()
-
-                # Poll
-                price = self.poll_es()
-                if price is None:
+                except Exception as e:
+                    consecutive_errors += 1
+                    _log(f"ERROR en loop ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {e}")
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        _log("Demasiados errores consecutivos, cerrando monitor")
+                        notifier.notify_monitor_crash(
+                            f"{consecutive_errors} errores consecutivos. Ultimo: {e}"
+                        )
+                        self.save_state()
+                        break
                     time.sleep(self.poll_interval)
-                    continue
-
-                _log(f"ES={price:.2f}")
-                self.process_tick(price)
-                self.save_state()
-
-                time.sleep(self.poll_interval)
 
         except KeyboardInterrupt:
             _log("Interrumpido por usuario")
             self.close_session()
+        except Exception as e:
+            _log(f"FATAL: {e}")
+            notifier.notify_monitor_crash(f"Crash fatal: {e}")
+            self.save_state()
+            raise

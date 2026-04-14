@@ -222,8 +222,8 @@ def _get_user_tweets(
                     "text": legacy["full_text"],
                     "created_at": legacy.get("created_at", ""),
                 })
-    except (KeyError, TypeError):
-        pass
+    except (KeyError, TypeError) as e:
+        raise RuntimeError(f"Error parsing X API response: {e}") from e
 
     return tweets
 
