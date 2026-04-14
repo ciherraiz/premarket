@@ -1,6 +1,12 @@
 """
 Obtiene tweets recientes de @AdamMancini4 usando httpx + cookies de X.
 
+Usa el endpoint SearchTimeline (POST) que devuelve resultados en tiempo real,
+a diferencia de UserTweets que tiene cache de ~1 hora.
+
+Los hashes de los endpoints GraphQL se auto-descubren desde el JS de x.com
+para sobrevivir las rotaciones periódicas de X.
+
 Requiere cookies de sesión X exportadas con Cookie-Editor (Chrome):
   X_COOKIES_FILE=cookies.json  (por defecto en raíz del proyecto)
 """
@@ -9,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -25,23 +32,23 @@ load_dotenv(_env_path, override=True)
 
 ET = ZoneInfo("America/New_York")
 MANCINI_SCREEN_NAME = "AdamMancini4"
+
+
 def _resolve_cookies_path() -> Path:
     """Busca cookies.json en la raíz del proyecto o en el repo principal."""
     env_path = os.getenv("X_COOKIES_FILE")
     if env_path:
         return Path(env_path)
-    # Buscar en la raíz del proyecto (funciona en worktrees)
     candidate = _PROJECT_ROOT / "cookies.json"
     if candidate.exists():
         return candidate
-    # Si estamos en un worktree (.claude/worktrees/X), buscar en repo principal
     main_root = _PROJECT_ROOT
     if ".claude" in str(main_root):
         main_root = Path(str(main_root).split(".claude")[0])
         candidate = main_root / "cookies.json"
         if candidate.exists():
             return candidate
-    return _PROJECT_ROOT / "cookies.json"  # default, fallará con error claro
+    return _PROJECT_ROOT / "cookies.json"
 
 
 COOKIES_PATH = _resolve_cookies_path()
@@ -54,47 +61,56 @@ BEARER_TOKEN = (
 
 GRAPHQL_URL = "https://x.com/i/api/graphql"
 
-# Features requeridas por la API GraphQL de X
-USER_FEATURES = {
-    "hidden_profile_subscriptions_enabled": True,
+# Features requeridas para SearchTimeline
+SEARCH_FEATURES = {
+    "rweb_video_screen_enabled": False,
+    "rweb_cashtags_enabled": True,
+    "profile_label_improvements_pcf_label_in_post_enabled": True,
+    "responsive_web_profile_redirect_enabled": True,
     "rweb_tipjar_consumption_enabled": True,
-    "responsive_web_graphql_exclude_directive_enabled": True,
-    "verified_phone_label_enabled": False,
-    "subscriptions_verification_info_is_identity_verified_enabled": True,
-    "subscriptions_verification_info_verified_since_enabled": True,
-    "highlights_tweets_tab_ui_enabled": True,
-    "responsive_web_twitter_article_notes_tab_enabled": True,
-    "subscriptions_feature_can_gift_premium": True,
-    "creator_subscriptions_tweet_preview_api_enabled": True,
-    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
-    "responsive_web_graphql_timeline_navigation_enabled": True,
-}
-
-TWEET_FEATURES = {
-    "rweb_tipjar_consumption_enabled": True,
-    "responsive_web_graphql_exclude_directive_enabled": True,
     "verified_phone_label_enabled": False,
     "creator_subscriptions_tweet_preview_api_enabled": True,
     "responsive_web_graphql_timeline_navigation_enabled": True,
     "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+    "premium_content_api_read_enabled": False,
     "communities_web_enable_tweet_community_results_fetch": True,
     "c9s_tweet_anatomy_moderator_badge_enabled": True,
+    "responsive_web_grok_analyze_button_fetch_trends_enabled": False,
+    "responsive_web_grok_analyze_post_followups_enabled": False,
+    "responsive_web_jetfuel_frame": False,
+    "responsive_web_grok_share_attachment_enabled": False,
+    "responsive_web_grok_annotations_enabled": False,
     "articles_preview_enabled": True,
     "responsive_web_edit_tweet_api_enabled": True,
     "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
     "view_counts_everywhere_api_enabled": True,
     "longform_notetweets_consumption_enabled": True,
     "responsive_web_twitter_article_tweet_consumption_enabled": True,
-    "tweet_awards_web_tipping_enabled": False,
-    "creator_subscriptions_quote_tweet_preview_enabled": False,
+    "content_disclosure_indicator_enabled": False,
+    "content_disclosure_ai_generated_indicator_enabled": False,
+    "responsive_web_grok_show_grok_translated_post": False,
+    "responsive_web_grok_analysis_button_from_backend": False,
+    "post_ctas_fetch_enabled": False,
     "freedom_of_speech_not_reach_fetch_enabled": True,
     "standardized_nudges_misinfo": True,
     "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
-    "rweb_video_timestamps_enabled": True,
     "longform_notetweets_rich_text_read_enabled": True,
     "longform_notetweets_inline_media_enabled": True,
+    "responsive_web_grok_image_annotation_enabled": False,
+    "responsive_web_grok_imagine_annotation_enabled": False,
+    "responsive_web_grok_community_note_auto_translation_is_enabled": False,
     "responsive_web_enhance_cards_enabled": False,
 }
+
+SEARCH_FIELD_TOGGLES = {
+    "withArticleRichContentState": True,
+    "withArticlePlainText": False,
+    "withGrokAnalyze": False,
+    "withDisallowedReplyControls": False,
+}
+
+# Cache de hashes descubiertos (válido durante la vida del proceso)
+_hash_cache: dict[str, str] = {}
 
 
 def _load_cookies() -> dict[str, str]:
@@ -107,7 +123,6 @@ def _load_cookies() -> dict[str, str]:
 
     raw = json.loads(COOKIES_PATH.read_text(encoding="utf-8"))
 
-    # Cookie-Editor exporta [{name, value, ...}], convertir a {name: value}
     if isinstance(raw, list):
         return {c["name"]: c["value"] for c in raw}
     return raw
@@ -133,7 +148,7 @@ def _build_client(cookies: dict[str, str]) -> httpx.Client:
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/131.0.0.0 Safari/537.36"
         ),
-        "Referer": f"https://x.com/{MANCINI_SCREEN_NAME}",
+        "Referer": f"https://x.com/search?q=from%3A{MANCINI_SCREEN_NAME}&f=live",
         "X-Twitter-Active-User": "yes",
         "X-Twitter-Auth-Type": "OAuth2Session",
         "X-Twitter-Client-Language": "en",
@@ -151,60 +166,82 @@ def _build_client(cookies: dict[str, str]) -> httpx.Client:
     return client
 
 
-def _get_user_id(client: httpx.Client, screen_name: str) -> str:
-    """Obtiene el user ID de X a partir del screen name."""
-    variables = json.dumps({
-        "screen_name": screen_name,
-        "withSafetyModeUserFields": True,
-    })
-    features = json.dumps(USER_FEATURES)
+def _discover_graphql_hash(operation: str) -> str:
+    """Auto-descubre el queryId actual de un endpoint GraphQL de X.
 
-    resp = client.get(
-        f"{GRAPHQL_URL}/xc8f1g7BYqr6VTzTbvNlGw/UserByScreenName",
-        params={"variables": variables, "features": features},
+    Extrae los hashes de los JS bundles de x.com. Los hashes rotan
+    con cada despliegue de X, así que no se pueden hardcodear.
+    """
+    if operation in _hash_cache:
+        return _hash_cache[operation]
+
+    resp = httpx.get(
+        "https://x.com",
+        follow_redirects=True,
+        timeout=15,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+        },
     )
-    resp.raise_for_status()
-    data = resp.json()
 
-    try:
-        return data["data"]["user"]["result"]["rest_id"]
-    except (KeyError, TypeError) as e:
-        raise RuntimeError(
-            f"No se pudo obtener user ID para @{screen_name}. "
-            "Las cookies pueden haber expirado."
-        ) from e
+    js_urls = re.findall(
+        r"https://abs\.twimg\.com/responsive-web/client-web[^\"]+\.js",
+        resp.text,
+    )
+
+    pattern = re.compile(
+        rf'queryId:"([^"]+)",operationName:"{re.escape(operation)}"'
+    )
+
+    for url in js_urls:
+        try:
+            js = httpx.get(url, timeout=15).text
+            match = pattern.search(js)
+            if match:
+                qid = match.group(1)
+                _hash_cache[operation] = qid
+                return qid
+        except httpx.HTTPError:
+            continue
+
+    raise RuntimeError(
+        f"No se pudo descubrir el hash para '{operation}'. "
+        "X puede haber cambiado la estructura de sus bundles JS."
+    )
 
 
-def _get_user_tweets(
-    client: httpx.Client, user_id: str, count: int = 20
+def _search_tweets(
+    client: httpx.Client, query: str, count: int = 20
 ) -> list[dict]:
-    """Obtiene tweets del timeline de un usuario vía GraphQL."""
-    variables = json.dumps({
-        "userId": user_id,
-        "count": count,
-        "includePromotedContent": False,
-        "withQuickPromoteEligibilityTweetFields": True,
-        "withVoice": True,
-        "withV2Timeline": True,
-    })
-    features = json.dumps(TWEET_FEATURES)
+    """Busca tweets vía SearchTimeline (POST, tiempo real)."""
+    qid = _discover_graphql_hash("SearchTimeline")
 
-    resp = client.get(
-        f"{GRAPHQL_URL}/E3opETHurmVJflFsUBVuUQ/UserTweets",
-        params={"variables": variables, "features": features},
-    )
+    body = {
+        "variables": {
+            "rawQuery": query,
+            "count": count,
+            "querySource": "typed_query",
+            "product": "Latest",
+        },
+        "features": SEARCH_FEATURES,
+        "fieldToggles": SEARCH_FIELD_TOGGLES,
+    }
+
+    resp = client.post(f"{GRAPHQL_URL}/{qid}/SearchTimeline", json=body)
     resp.raise_for_status()
     data = resp.json()
 
     tweets = []
     try:
         instructions = (
-            data["data"]["user"]["result"]["timeline_v2"]
+            data["data"]["search_by_raw_query"]["search_timeline"]
             ["timeline"]["instructions"]
         )
         for instruction in instructions:
-            if instruction.get("type") != "TimelineAddEntries":
-                continue
             for entry in instruction.get("entries", []):
                 content = entry.get("content", {})
                 if content.get("entryType") != "TimelineTimelineItem":
@@ -223,7 +260,7 @@ def _get_user_tweets(
                     "created_at": legacy.get("created_at", ""),
                 })
     except (KeyError, TypeError) as e:
-        raise RuntimeError(f"Error parsing X API response: {e}") from e
+        raise RuntimeError(f"Error parsing X Search response: {e}") from e
 
     return tweets
 
@@ -241,8 +278,9 @@ def fetch_mancini_tweets(max_tweets: int = 20) -> list[dict]:
     cookies = _load_cookies()
     client = _build_client(cookies)
 
-    user_id = _get_user_id(client, MANCINI_SCREEN_NAME)
-    raw_tweets = _get_user_tweets(client, user_id, count=max_tweets)
+    raw_tweets = _search_tweets(
+        client, f"from:{MANCINI_SCREEN_NAME}", count=max_tweets
+    )
 
     today = datetime.now(ET).strftime("%Y-%m-%d")
     result = []
@@ -268,13 +306,11 @@ def fetch_mancini_weekend_tweets(max_tweets: int = 40) -> list[dict]:
     cookies = _load_cookies()
     client = _build_client(cookies)
 
-    user_id = _get_user_id(client, MANCINI_SCREEN_NAME)
-    raw_tweets = _get_user_tweets(client, user_id, count=max_tweets)
+    raw_tweets = _search_tweets(
+        client, f"from:{MANCINI_SCREEN_NAME}", count=max_tweets
+    )
 
     now = datetime.now(ET)
-    # Buscar tweets del sábado y domingo de este fin de semana
-    # Si hoy es sábado (5) o domingo (6), buscar hoy
-    # Si hoy es lunes-viernes, buscar el sábado/domingo pasados
     weekday = now.weekday()
     if weekday == 5:  # sábado
         weekend_dates = {now.strftime("%Y-%m-%d")}
@@ -299,7 +335,6 @@ def fetch_mancini_weekend_tweets(max_tweets: int = 40) -> list[dict]:
         tweet_date = dt.astimezone(ET).strftime("%Y-%m-%d")
         if tweet_date not in weekend_dates:
             continue
-        # Filtrar solo tweets con contenido Big Picture
         text_lower = tweet["text"].lower()
         if "big picture" in text_lower or "plan next week" in text_lower:
             result.append({
@@ -311,7 +346,7 @@ def fetch_mancini_weekend_tweets(max_tweets: int = 40) -> list[dict]:
     return result
 
 
-# Alias para compatibilidad con el skill (era async, ahora es sync)
+# Alias para compatibilidad con el skill
 fetch_tweets_sync = fetch_mancini_tweets
 
 

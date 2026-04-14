@@ -1,12 +1,10 @@
-"""Tests para scripts/mancini/tweet_fetcher.py — httpx + cookies de X."""
+"""Tests para scripts/mancini/tweet_fetcher.py — SearchTimeline + auto-discovery."""
 
 import json
 import os
 import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -16,6 +14,8 @@ from scripts.mancini.tweet_fetcher import (
     _load_cookies,
     _build_client,
     _parse_x_datetime,
+    _discover_graphql_hash,
+    _search_tweets,
     fetch_mancini_tweets,
     fetch_mancini_weekend_tweets,
     fetch_tweets_sync,
@@ -100,12 +100,128 @@ def test_parse_x_datetime_invalid():
     assert _parse_x_datetime(None) is None
 
 
+# ── _discover_graphql_hash ────────────────────────────────────────────
+
+def test_discover_hash_from_js_bundle(monkeypatch):
+    """Descubre hash de SearchTimeline desde JS bundle de x.com."""
+    monkeypatch.setattr("scripts.mancini.tweet_fetcher._hash_cache", {})
+
+    mock_main_resp = MagicMock()
+    mock_main_resp.text = (
+        '<script src="https://abs.twimg.com/responsive-web/client-web/main.abc123.js"></script>'
+    )
+
+    mock_js_resp = MagicMock()
+    mock_js_resp.text = (
+        'e.exports={queryId:"FAKE_HASH_123",operationName:"SearchTimeline",'
+        'operationType:"query"}'
+    )
+
+    with patch("scripts.mancini.tweet_fetcher.httpx.get") as mock_get:
+        mock_get.side_effect = [mock_main_resp, mock_js_resp]
+        result = _discover_graphql_hash("SearchTimeline")
+
+    assert result == "FAKE_HASH_123"
+
+
+def test_discover_hash_uses_cache(monkeypatch):
+    """Usa cache si el hash ya fue descubierto."""
+    monkeypatch.setattr(
+        "scripts.mancini.tweet_fetcher._hash_cache",
+        {"SearchTimeline": "CACHED_HASH"},
+    )
+
+    with patch("scripts.mancini.tweet_fetcher.httpx.get") as mock_get:
+        result = _discover_graphql_hash("SearchTimeline")
+
+    assert result == "CACHED_HASH"
+    mock_get.assert_not_called()
+
+
+def test_discover_hash_not_found(monkeypatch):
+    """Lanza RuntimeError si no encuentra el hash en ningún bundle."""
+    monkeypatch.setattr("scripts.mancini.tweet_fetcher._hash_cache", {})
+
+    mock_main_resp = MagicMock()
+    mock_main_resp.text = (
+        '<script src="https://abs.twimg.com/responsive-web/client-web/main.abc.js"></script>'
+    )
+
+    mock_js_resp = MagicMock()
+    mock_js_resp.text = "var x = 42; // no graphql here"
+
+    with patch("scripts.mancini.tweet_fetcher.httpx.get") as mock_get:
+        mock_get.side_effect = [mock_main_resp, mock_js_resp]
+        with pytest.raises(RuntimeError, match="No se pudo descubrir"):
+            _discover_graphql_hash("SearchTimeline")
+
+
+# ── _search_tweets ────────────────────────────────────────────────────
+
+def _make_search_response(tweets_data: list[dict]) -> dict:
+    """Crea estructura de respuesta SearchTimeline."""
+    entries = []
+    for t in tweets_data:
+        entries.append({"content": {
+            "entryType": "TimelineTimelineItem",
+            "itemContent": {"tweet_results": {"result": {"legacy": {
+                "id_str": t["id"],
+                "full_text": t["text"],
+                "created_at": t["created_at"],
+            }}}},
+        }})
+    return {
+        "data": {"search_by_raw_query": {"search_timeline": {"timeline": {
+            "instructions": [{"entries": entries}],
+        }}}}
+    }
+
+
+def test_search_tweets_parses_results(monkeypatch):
+    """Parsea tweets de la respuesta SearchTimeline."""
+    monkeypatch.setattr(
+        "scripts.mancini.tweet_fetcher._hash_cache",
+        {"SearchTimeline": "HASH"},
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _make_search_response([
+        {"id": "1", "text": "ES plan today", "created_at": "Mon Apr 14 14:00:00 +0000 2026"},
+        {"id": "2", "text": "Another tweet", "created_at": "Mon Apr 14 15:00:00 +0000 2026"},
+    ])
+
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_resp
+
+    result = _search_tweets(mock_client, "from:AdamMancini4")
+    assert len(result) == 2
+    assert result[0]["text"] == "ES plan today"
+    assert result[1]["text"] == "Another tweet"
+
+
+def test_search_tweets_empty_response(monkeypatch):
+    """Respuesta sin tweets devuelve lista vacía."""
+    monkeypatch.setattr(
+        "scripts.mancini.tweet_fetcher._hash_cache",
+        {"SearchTimeline": "HASH"},
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _make_search_response([])
+
+    mock_client = MagicMock()
+    mock_client.post.return_value = mock_resp
+
+    result = _search_tweets(mock_client, "from:AdamMancini4")
+    assert result == []
+
+
 # ── fetch_mancini_tweets ──────────────────────────────────────────────
 
 def _today_x_date(hour=10) -> str:
     """Genera fecha en formato X para hoy."""
     now = datetime.now(ET).replace(hour=hour, minute=0, second=0, microsecond=0)
-    utc = now.astimezone(ZoneInfo("UTC"))
+    utc = now.astimezone()
     return utc.strftime("%a %b %d %H:%M:%S +0000 %Y")
 
 
@@ -113,7 +229,7 @@ def _yesterday_x_date(hour=10) -> str:
     """Genera fecha en formato X para ayer."""
     now = datetime.now(ET).replace(hour=hour, minute=0, second=0, microsecond=0)
     yesterday = now - timedelta(days=1)
-    utc = yesterday.astimezone(ZoneInfo("UTC"))
+    utc = yesterday.astimezone()
     return utc.strftime("%a %b %d %H:%M:%S +0000 %Y")
 
 
@@ -128,38 +244,13 @@ def test_fetch_tweets_filters_today(tmp_path, monkeypatch):
         "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
     )
 
-    mock_user_resp = MagicMock()
-    mock_user_resp.json.return_value = {
-        "data": {"user": {"result": {"rest_id": "12345"}}}
-    }
-
-    mock_tweets_resp = MagicMock()
-    mock_tweets_resp.json.return_value = {
-        "data": {"user": {"result": {"timeline_v2": {"timeline": {"instructions": [{
-            "type": "TimelineAddEntries",
-            "entries": [
-                {"content": {
-                    "entryType": "TimelineTimelineItem",
-                    "itemContent": {"tweet_results": {"result": {"legacy": {
-                        "id_str": "1", "full_text": "ES plan today",
-                        "created_at": _today_x_date(),
-                    }}}},
-                }},
-                {"content": {
-                    "entryType": "TimelineTimelineItem",
-                    "itemContent": {"tweet_results": {"result": {"legacy": {
-                        "id_str": "2", "full_text": "old plan",
-                        "created_at": _yesterday_x_date(),
-                    }}}},
-                }},
-            ],
-        }]}}}}}
-    }
-
-    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build:
-        mock_client = MagicMock()
-        mock_client.get.side_effect = [mock_user_resp, mock_tweets_resp]
-        mock_build.return_value = mock_client
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build, \
+         patch("scripts.mancini.tweet_fetcher._search_tweets") as mock_search:
+        mock_search.return_value = [
+            {"id": "1", "text": "ES plan today", "created_at": _today_x_date()},
+            {"id": "2", "text": "old plan", "created_at": _yesterday_x_date()},
+        ]
+        mock_build.return_value = MagicMock()
 
         result = fetch_mancini_tweets()
 
@@ -180,22 +271,10 @@ def test_fetch_tweets_empty_timeline(tmp_path, monkeypatch):
         "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
     )
 
-    mock_user_resp = MagicMock()
-    mock_user_resp.json.return_value = {
-        "data": {"user": {"result": {"rest_id": "12345"}}}
-    }
-
-    mock_tweets_resp = MagicMock()
-    mock_tweets_resp.json.return_value = {
-        "data": {"user": {"result": {"timeline_v2": {"timeline": {"instructions": [{
-            "type": "TimelineAddEntries", "entries": [],
-        }]}}}}}
-    }
-
-    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build:
-        mock_client = MagicMock()
-        mock_client.get.side_effect = [mock_user_resp, mock_tweets_resp]
-        mock_build.return_value = mock_client
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build, \
+         patch("scripts.mancini.tweet_fetcher._search_tweets") as mock_search:
+        mock_search.return_value = []
+        mock_build.return_value = MagicMock()
 
         result = fetch_mancini_tweets()
 
@@ -212,34 +291,13 @@ def test_fetch_tweets_sync_is_alias():
 def _saturday_x_date(hour=12) -> str:
     """Genera fecha en formato X para el sábado más reciente."""
     now = datetime.now(ET)
-    days_since_sat = (now.weekday() + 2) % 7  # 0=lunes → sat=5 días atrás
+    days_since_sat = (now.weekday() + 2) % 7
     if now.weekday() == 5:
         days_since_sat = 0
     sat = now - timedelta(days=days_since_sat)
     sat = sat.replace(hour=hour, minute=0, second=0, microsecond=0)
-    utc = sat.astimezone(ZoneInfo("UTC"))
+    utc = sat.astimezone()
     return utc.strftime("%a %b %d %H:%M:%S +0000 %Y")
-
-
-def _make_graphql_response(tweets_data: list[dict]) -> MagicMock:
-    """Crea mock de respuesta GraphQL con tweets."""
-    entries = []
-    for t in tweets_data:
-        entries.append({"content": {
-            "entryType": "TimelineTimelineItem",
-            "itemContent": {"tweet_results": {"result": {"legacy": {
-                "id_str": t["id"],
-                "full_text": t["text"],
-                "created_at": t["created_at"],
-            }}}},
-        }})
-    resp = MagicMock()
-    resp.json.return_value = {
-        "data": {"user": {"result": {"timeline_v2": {"timeline": {"instructions": [{
-            "type": "TimelineAddEntries", "entries": entries,
-        }]}}}}}
-    }
-    return resp
 
 
 def test_fetch_weekend_tweets_filters_big_picture(tmp_path, monkeypatch):
@@ -253,26 +311,19 @@ def test_fetch_weekend_tweets_filters_big_picture(tmp_path, monkeypatch):
         "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
     )
 
-    mock_user_resp = MagicMock()
-    mock_user_resp.json.return_value = {
-        "data": {"user": {"result": {"rest_id": "12345"}}}
-    }
-
     sat_date = _saturday_x_date()
-    mock_tweets_resp = _make_graphql_response([
-        {"id": "1", "text": "Big Picture View: Bulls hold 6817", "created_at": sat_date},
-        {"id": "2", "text": "Random weekend thought", "created_at": sat_date},
-        {"id": "3", "text": "Plan Next Week: 6903 target", "created_at": sat_date},
-    ])
 
-    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build:
-        mock_client = MagicMock()
-        mock_client.get.side_effect = [mock_user_resp, mock_tweets_resp]
-        mock_build.return_value = mock_client
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build, \
+         patch("scripts.mancini.tweet_fetcher._search_tweets") as mock_search:
+        mock_search.return_value = [
+            {"id": "1", "text": "Big Picture View: Bulls hold 6817", "created_at": sat_date},
+            {"id": "2", "text": "Random weekend thought", "created_at": sat_date},
+            {"id": "3", "text": "Plan Next Week: 6903 target", "created_at": sat_date},
+        ]
+        mock_build.return_value = MagicMock()
 
         result = fetch_mancini_weekend_tweets()
 
-    # Solo Big Picture y Plan Next Week, no el random
     assert len(result) == 2
     assert any("Big Picture" in t["text"] for t in result)
     assert any("Plan Next Week" in t["text"] for t in result)
@@ -289,20 +340,14 @@ def test_fetch_weekend_tweets_no_big_picture(tmp_path, monkeypatch):
         "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
     )
 
-    mock_user_resp = MagicMock()
-    mock_user_resp.json.return_value = {
-        "data": {"user": {"result": {"rest_id": "12345"}}}
-    }
-
     sat_date = _saturday_x_date()
-    mock_tweets_resp = _make_graphql_response([
-        {"id": "1", "text": "Enjoying the weekend", "created_at": sat_date},
-    ])
 
-    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build:
-        mock_client = MagicMock()
-        mock_client.get.side_effect = [mock_user_resp, mock_tweets_resp]
-        mock_build.return_value = mock_client
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build, \
+         patch("scripts.mancini.tweet_fetcher._search_tweets") as mock_search:
+        mock_search.return_value = [
+            {"id": "1", "text": "Enjoying the weekend", "created_at": sat_date},
+        ]
+        mock_build.return_value = MagicMock()
 
         result = fetch_mancini_weekend_tweets()
 

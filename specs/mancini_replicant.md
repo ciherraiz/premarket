@@ -134,9 +134,12 @@ Append-only en `logs/mancini_trades.jsonl`. Cada trade:
 
 **tweet_fetcher.py** — obtiene tweets vía `httpx` + GraphQL API de X (session cookies):
 1. Carga cookies exportadas con Cookie-Editor (`cookies.json`)
-2. Usa GraphQL API de X (UserByScreenName + UserTweets) con bearer token público
-3. Filtrado a tweets del día (timezone ET)
-4. Retorna lista de `{id, text, created_at}`
+2. Auto-descubre hashes GraphQL desde JS bundles de x.com (sobrevive rotaciones)
+3. Usa endpoint SearchTimeline (POST) con query `from:AdamMancini4` — tiempo real
+4. Filtrado a tweets del día (timezone ET)
+5. Retorna lista de `{id, text, created_at}`
+
+Ver `specs/mancini_realtime_tweets.md` para detalle de la migración de UserTweets a SearchTimeline.
 
 **tweet_parser.py** — extrae niveles estructurados vía Claude Haiku:
 1. Construye prompt con convenciones de notación de Mancini
