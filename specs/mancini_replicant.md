@@ -171,8 +171,8 @@ Cada tarea se ejecuta vía un `.bat` wrapper en `scripts/mancini/` que invoca
 
 ## Ventanas de trading
 
-- 07:00-11:30 ET — scan de tweets (Task Scheduler cada 10 min)
-- 07:00-16:00 ET — monitor activo (polling cada 60s, auto-para a las 16:00 ET)
+- 07:00-16:00 ET — scan de tweets (Task Scheduler cada 10 min, cubre toda la sesión regular)
+- 07:00-16:00 ET — monitor activo (polling cada 60s, espera plan si no existe, auto-para a las 16:00 ET)
 
 ## Ficheros de estado
 

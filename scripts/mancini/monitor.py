@@ -356,15 +356,8 @@ class ManciniMonitor:
 
         self.save_state()
 
-    def run(self) -> None:
-        """Loop principal del monitor. Se auto-finaliza a SESSION_END_HOUR ET."""
-        _log("Monitor arrancando...")
-        self.load_state()
-
-        if not self.plan:
-            _log("ERROR: No hay plan cargado. Ejecuta /mancini-scan primero.")
-            return
-
+    def _log_plan_info(self) -> None:
+        """Muestra info del plan y weekly al log."""
         _log(f"Plan: upper={self.plan.key_level_upper} lower={self.plan.key_level_lower}")
         _log(f"Targets up: {self.plan.targets_upper}")
         _log(f"Targets down: {self.plan.targets_lower}")
@@ -373,6 +366,33 @@ class ManciniMonitor:
             _log(f"Weekly: upper={self.weekly.key_level_upper} lower={self.weekly.key_level_lower} sesgo={bias}")
         else:
             _log(f"Weekly: no cargado (sesgo={bias})")
+
+    def _wait_for_plan(self) -> bool:
+        """Espera a que el scan cree el plan de hoy. Retorna True si encontrado.
+
+        Reintenta cada poll_interval hasta session_end. Si el plan aparece
+        en disco (creado por el scan que corre en paralelo), lo carga y retorna True.
+        """
+        _log("Sin plan de hoy — esperando a que el scan lo cree...")
+        while True:
+            now = _now_et()
+            if now.hour >= self.session_end:
+                _log("Fin de sesión sin plan — cerrando monitor")
+                return False
+
+            # Intentar cargar plan (load_state valida la fecha)
+            self.load_state()
+            if self.plan:
+                _log("Plan de hoy detectado!")
+                self._log_plan_info()
+                return True
+
+            time.sleep(self.poll_interval)
+
+    def run(self) -> None:
+        """Loop principal del monitor. Se auto-finaliza a SESSION_END_HOUR ET."""
+        _log("Monitor arrancando...")
+        self.load_state()
 
         consecutive_errors = 0
         MAX_CONSECUTIVE_ERRORS = 5
@@ -391,6 +411,12 @@ class ManciniMonitor:
                     if now.hour < self.session_start:
                         _log(f"Esperando inicio de sesión ({self.session_start}:00 ET)...")
                         time.sleep(self.poll_interval)
+                        continue
+
+                    # Si no hay plan, esperar a que el scan lo cree
+                    if not self.plan:
+                        if not self._wait_for_plan():
+                            break
                         continue
 
                     # Recargar plan si cambió
