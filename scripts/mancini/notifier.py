@@ -15,8 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from scripts.notify_telegram import send_telegram, _esc
 
 
-def notify_plan_loaded(plan: dict) -> bool:
-    """Alerta: plan del día cargado con niveles extraídos."""
+def notify_plan_loaded(plan: dict,
+                       session_start: int | None = None,
+                       session_end: int | None = None) -> bool:
+    """Alerta: plan del día cargado con niveles extraídos.
+
+    Si session_start/session_end se proporcionan (llamada desde monitor),
+    incluye la línea de ventana de monitor. Si no (llamada desde scan), la omite.
+    """
     fecha = _esc(plan.get("fecha", "N/A"))
     upper = _esc(plan.get("key_level_upper", "N/A"))
     lower = _esc(plan.get("key_level_lower", "N/A"))
@@ -28,15 +34,21 @@ def notify_plan_loaded(plan: dict) -> bool:
     if chop:
         chop_line = f"\n🔄 *Chop zone:* {_esc(chop[0])} \\- {_esc(chop[1])}"
 
-    msg = "\n".join([
+    lines = [
         f"🎯 *Mancini Plan \\| {fecha}*",
         "",
         f"🟢 *Upper:* {upper} → {targets_up}",
         f"🔴 *Lower:* {lower} → {targets_down}",
         chop_line,
-        "",
-        "📡 Monitor activo 08:00\\-11:00 ET",
-    ])
+    ]
+
+    if session_start is not None and session_end is not None:
+        lines.append("")
+        lines.append(
+            f"📡 Monitor activo {session_start:02d}:00\\-{session_end:02d}:00 ET"
+        )
+
+    msg = "\n".join(lines)
     return send_telegram(msg.strip())
 
 

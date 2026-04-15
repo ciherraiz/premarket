@@ -95,10 +95,3 @@ def save_weekly(plan: DailyPlan, path: Path = WEEKLY_PLAN_PATH) -> None:
 def load_weekly(path: Path = WEEKLY_PLAN_PATH) -> DailyPlan | None:
     """Carga el plan semanal desde JSON. Retorna None si no existe."""
     return load_plan(path)
-    """Persiste el plan semanal (Big Picture View) en JSON."""
-    save_plan(plan, path=path)
-
-
-def load_weekly(path: Path = WEEKLY_PLAN_PATH) -> DailyPlan | None:
-    """Carga el plan semanal. Retorna None si no existe."""
-    return load_plan(path=path)
