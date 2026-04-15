@@ -25,7 +25,7 @@ Los subcomandos disponibles son:
 |----------------|---------------|------------------------------------------|
 | `scan`         | one-shot      | Fetch tweets + parse + save/merge plan   |
 | `weekly-scan`  | one-shot      | Fetch Big Picture + parse + save weekly  |
-| `monitor`      | larga duración | Polling /ES cada 60s, auto-para a las 16:00 ET |
+| `monitor`      | larga duración | Polling /ES cada 60s, espera plan si no existe, auto-para a las 16:00 ET |
 | `status`       | one-shot      | Muestra estado actual                    |
 | `reset`        | one-shot      | Resetea estado para nuevo día            |
 
@@ -45,18 +45,20 @@ Cada tarea de Task Scheduler ejecuta un `.bat` en `scripts/mancini/` que:
 
 **Script**: `scripts/mancini/scan_start.bat`
 **Subcomando**: `run_mancini.py scan`
-**Ventana**: 13:00–17:30 CEST (07:00–11:30 ET)
+**Ventana**: 13:00–22:00 CEST (07:00–16:00 ET) — cubre toda la sesión regular
 **Cadencia**: cada 10 minutos dentro de la ventana
 
 | Parámetro Task Scheduler | Valor |
 |---|---|
 | Nombre | `ManciniScan` |
-| Trigger | Lun-Vie, inicio 13:00 CEST, repetir cada 10 min durante 4h 30min |
+| Trigger | Lun-Vie, inicio 13:00 CEST, repetir cada 10 min durante 9h |
 | Acción | `scripts/mancini/scan_start.bat` |
 | Múltiples instancias | No iniciar nueva si ya hay una corriendo |
 
 El scan es idempotente: si no hay tweets nuevos, termina sin error y sin
 notificar (evita spam). Solo notifica a Telegram cuando el plan cambia.
+La ventana cubre toda la sesión regular para capturar actualizaciones
+intraday de Mancini.
 
 **Prerequisitos**: `cookies.json` (sesión X) y `ANTHROPIC_API_KEY` en `.env`
 
@@ -74,9 +76,11 @@ notificar (evita spam). Solo notifica a Telegram cuando el plan cambia.
 | Acción | `scripts/mancini/monitor_start.bat` |
 | Múltiples instancias | No iniciar nueva si ya hay una corriendo |
 
-**Prerequisito**: el scan debe haber cargado `outputs/mancini_plan.json`.
-El monitor arranca a las 13:00 pero espera internamente hasta `SESSION_START_HOUR`
-(07:00 ET) para empezar a pollear. Si no hay plan del día, se auto-para.
+El monitor arranca a las 13:00 CEST y espera internamente hasta
+`SESSION_START_HOUR` (07:00 ET). Si no hay plan del día cuando entra en
+sesión, **espera y reintenta** cada 60s en vez de pararse — el scan corre
+en paralelo y creará el plan cuando Mancini publique. En cuanto el plan
+aparece, el monitor lo carga y empieza a pollear /ES.
 
 **Session end**: el monitor se auto-finaliza a las 16:00 ET (`SESSION_END_HOUR`).
 
@@ -125,11 +129,10 @@ Es aceptable porque el usuario la lanza manualmente al iniciar sesión.
 
 ```
 13:00 ─── ManciniScan comienza (cada 10 min) ───────────────────
-13:00     ManciniMonitor arranca (espera hasta 07:00 ET)
-14:00 ─── Monitor empieza polling /ES ───────────────────────────
+13:00     ManciniMonitor arranca (espera plan + session_start)
+  ...     Monitor reintenta cada 60s hasta que el scan cree el plan
 15:30 ─── Apertura mercado (09:30 ET) ───────────────────────────
-17:30 ─── ManciniScan termina ───────────────────────────────────
-22:00 ─── ManciniMonitor auto-para (16:00 ET) ───────────────────
+22:00 ─── ManciniScan + ManciniMonitor terminan (16:00 ET) ──────
 ```
 
 ## Resumen visual — Fin de semana (horario CEST)
