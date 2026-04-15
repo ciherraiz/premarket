@@ -3,11 +3,15 @@
 Punto de entrada CLI para el Mancini Replicant.
 
 Subcomandos:
-  monitor  — arranca el loop de polling /ES (proceso larga duración)
-  status   — muestra estado actual (plan + detectores + trades)
-  reset    — resetea estado para un nuevo día
+  scan         — obtiene tweets de Mancini y extrae plan diario
+  weekly-scan  — obtiene Big Picture View del fin de semana
+  monitor      — arranca el loop de polling /ES (proceso larga duración)
+  status       — muestra estado actual (plan + detectores + trades)
+  reset        — resetea estado para un nuevo día
 
 Uso:
+  uv run python scripts/mancini/run_mancini.py scan
+  uv run python scripts/mancini/run_mancini.py weekly-scan
   uv run python scripts/mancini/run_mancini.py monitor [--interval 60]
   uv run python scripts/mancini/run_mancini.py status
   uv run python scripts/mancini/run_mancini.py reset
@@ -16,14 +20,138 @@ Uso:
 import argparse
 import json
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # Asegurar que el proyecto raíz está en sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from scripts.mancini.config import load_plan, PLAN_PATH
+from scripts.mancini.config import load_plan, save_plan, save_weekly, PLAN_PATH
 from scripts.mancini.detector import load_detectors, STATE_PATH, save_detectors
 from scripts.mancini.monitor import ManciniMonitor
+
+ET = ZoneInfo("America/New_York")
+
+
+def cmd_scan(args) -> None:
+    """Obtiene tweets de Mancini y extrae/actualiza el plan diario."""
+    from scripts.mancini.tweet_fetcher import fetch_tweets_sync
+    from scripts.mancini.tweet_parser import parse_tweets_to_plan
+    from scripts.mancini.logger import append_scan_result
+    from scripts.mancini import notifier
+
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+
+    # Fetch tweets
+    try:
+        tweets = fetch_tweets_sync()
+    except Exception as e:
+        print(f"Error fetching tweets: {e}")
+        append_scan_result("error", 0, False, str(e), today)
+        sys.exit(1)
+
+    if not tweets:
+        print(f"No se encontraron tweets de Mancini para {today}")
+        append_scan_result("no_tweets", 0, False, "No tweets found", today)
+        sys.exit(0)
+
+    print(f"Encontrados {len(tweets)} tweets de hoy")
+    for i, t in enumerate(tweets, 1):
+        print(f"  {i}. {t['text'][:100]}...")
+
+    # Parsear con Haiku
+    try:
+        plan = parse_tweets_to_plan(tweets, today)
+    except Exception as e:
+        print(f"Error parsing tweets: {e}")
+        append_scan_result("parse_error", len(tweets), False, str(e), today)
+        sys.exit(1)
+
+    if plan is None:
+        print("Haiku determinó que no hay plan nuevo hoy")
+        append_scan_result("no_plan", len(tweets), False, "Haiku: no plan", today)
+        sys.exit(0)
+
+    # Merge si ya existe plan de hoy
+    existing = load_plan()
+    is_update = False
+    if existing and existing.fecha == today:
+        old_targets = set(existing.targets_upper + existing.targets_lower)
+        for tweet in plan.raw_tweets:
+            existing.merge_update(
+                new_targets_upper=plan.targets_upper,
+                new_targets_lower=plan.targets_lower,
+                new_tweet=tweet,
+            )
+        if plan.chop_zone and not existing.chop_zone:
+            existing.chop_zone = plan.chop_zone
+        save_plan(existing)
+        new_targets = set(existing.targets_upper + existing.targets_lower)
+        is_update = new_targets != old_targets
+        plan = existing
+        print("Plan actualizado (merge con existente)")
+    else:
+        save_plan(plan)
+        is_update = True
+        print("Plan nuevo guardado")
+
+    # Notificar a Telegram si hay cambios
+    if is_update:
+        notifier.notify_plan_loaded(plan.to_dict())
+        print("Notificación Telegram enviada")
+
+    append_scan_result("success", len(tweets), is_update, "", today)
+    print(json.dumps(plan.to_dict(), indent=2))
+
+
+def cmd_weekly_scan(args) -> None:
+    """Obtiene Big Picture View del fin de semana."""
+    from scripts.mancini.tweet_fetcher import fetch_mancini_weekend_tweets
+    from scripts.mancini.tweet_parser import parse_weekly_tweets
+    from scripts.mancini import notifier
+
+    now = datetime.now(ET)
+
+    # Calcular lunes de la próxima semana (o esta si ya es lun-vie)
+    weekday = now.weekday()
+    if weekday < 5:  # lun-vie: lunes de esta semana
+        monday = now - timedelta(days=weekday)
+    else:  # sab-dom: lunes siguiente
+        monday = now + timedelta(days=(7 - weekday))
+    week_start = monday.strftime("%Y-%m-%d")
+
+    # Fetch tweets Big Picture del fin de semana
+    try:
+        tweets = fetch_mancini_weekend_tweets()
+    except Exception as e:
+        print(f"Error fetching weekend tweets: {e}")
+        sys.exit(1)
+
+    if not tweets:
+        print("No se encontró Big Picture View este fin de semana")
+        sys.exit(0)
+
+    print(f"Encontrados {len(tweets)} tweets Big Picture")
+    for i, t in enumerate(tweets, 1):
+        print(f"  {i}. {t['text'][:120]}...")
+
+    # Parsear con Haiku
+    try:
+        plan = parse_weekly_tweets(tweets, week_start)
+    except Exception as e:
+        print(f"Error parsing weekly tweets: {e}")
+        sys.exit(1)
+
+    if plan is None:
+        print("Haiku determinó que no hay plan semanal claro")
+        sys.exit(0)
+
+    # Guardar (sobreescribe si ya existe)
+    save_weekly(plan)
+    notifier.notify_weekly_plan(plan.to_dict())
+    print(f"Plan semanal guardado para semana del {week_start}")
+    print(json.dumps(plan.to_dict(), indent=2))
 
 
 def cmd_monitor(args) -> None:
@@ -100,6 +228,12 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # scan
+    sub.add_parser("scan", help="Fetch tweets y extrae plan diario")
+
+    # weekly-scan
+    sub.add_parser("weekly-scan", help="Fetch Big Picture View semanal")
+
     # monitor
     p_monitor = sub.add_parser("monitor", help="Arranca polling /ES")
     p_monitor.add_argument("--interval", type=int, default=60,
@@ -119,7 +253,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "monitor":
+    if args.command == "scan":
+        cmd_scan(args)
+    elif args.command == "weekly-scan":
+        cmd_weekly_scan(args)
+    elif args.command == "monitor":
         cmd_monitor(args)
     elif args.command == "status":
         cmd_status(args)

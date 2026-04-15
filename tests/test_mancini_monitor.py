@@ -438,3 +438,41 @@ def test_check_plan_updates_rejects_stale(monitor, sample_plan, plan_path):
     monitor._check_plan_updates()
     # Debe mantener el plan original, no el stale
     assert monitor.plan.fecha == "2026-04-10"
+
+
+# ── Wait for plan ──────────────────────────────────────────────────
+
+def test_wait_for_plan_finds_plan(plan_path, state_path, weekly_path):
+    """_wait_for_plan detecta cuando el scan crea el plan en disco."""
+    m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
+                       weekly_path=weekly_path, poll_interval=0)
+    # No hay plan inicialmente
+    m.load_state()
+    assert m.plan is None
+
+    # Simular que el scan crea el plan durante la espera
+    plan = DailyPlan(
+        fecha="2026-04-10",
+        key_level_upper=6809,
+        targets_upper=[6819, 6830],
+        key_level_lower=6781,
+        targets_lower=[6766],
+    )
+    save_plan(plan, plan_path)
+
+    # _wait_for_plan debería encontrar el plan en la primera iteración
+    found = m._wait_for_plan()
+    assert found is True
+    assert m.plan is not None
+    assert m.plan.fecha == "2026-04-10"
+
+
+def test_wait_for_plan_respects_session_end(plan_path, state_path, weekly_path):
+    """_wait_for_plan se para al llegar a session_end sin plan."""
+    # session_end=9, _now_et devuelve 09:30 → ya pasó session_end
+    m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
+                       weekly_path=weekly_path, session_end=9, poll_interval=0)
+
+    found = m._wait_for_plan()
+    assert found is False
+    assert m.plan is None
