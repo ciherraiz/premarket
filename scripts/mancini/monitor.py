@@ -76,6 +76,14 @@ class ManciniMonitor:
         """Carga plan, weekly y detectores desde disco."""
         self.plan = load_plan(self.plan_path)
         self.weekly = load_weekly(self.weekly_path)
+
+        # Validar que el plan corresponde a hoy (ET)
+        if self.plan:
+            today_et = _now_et().strftime("%Y-%m-%d")
+            if self.plan.fecha != today_et:
+                _log(f"Plan descartado: fecha {self.plan.fecha} != hoy {today_et}")
+                self.plan = None
+
         if self.plan:
             self.trade_manager.fecha = self.plan.fecha
             self._plan_mtime = self.plan_path.stat().st_mtime if self.plan_path.exists() else 0
@@ -140,6 +148,15 @@ class ManciniMonitor:
             old_plan = self.plan
             self.plan = load_plan(self.plan_path)
             self._plan_mtime = mtime
+
+            # Validar que el plan recargado corresponde a hoy (ET)
+            if self.plan:
+                today_et = _now_et().strftime("%Y-%m-%d")
+                if self.plan.fecha != today_et:
+                    _log(f"Plan recargado descartado: fecha {self.plan.fecha} != hoy {today_et}")
+                    self.plan = old_plan
+                    return
+
             if self.plan and old_plan:
                 # Detectar nuevos targets
                 new_up = set(self.plan.targets_upper) - set(old_plan.targets_upper)
@@ -148,7 +165,11 @@ class ManciniMonitor:
                 new_lower = self.plan.key_level_lower != old_plan.key_level_lower
                 if new_up or new_down or new_upper or new_lower:
                     _log(f"Plan actualizado — nuevos targets: up={new_up} down={new_down}")
-                    notifier.notify_plan_loaded(self.plan.to_dict())
+                    notifier.notify_plan_loaded(
+                        self.plan.to_dict(),
+                        session_start=self.session_start,
+                        session_end=self.session_end,
+                    )
                     # Reiniciar detectores si cambiaron los niveles clave
                     if new_upper or new_lower:
                         _log("Niveles clave cambiaron — reiniciando detectores")
@@ -352,9 +373,6 @@ class ManciniMonitor:
             _log(f"Weekly: upper={self.weekly.key_level_upper} lower={self.weekly.key_level_lower} sesgo={bias}")
         else:
             _log(f"Weekly: no cargado (sesgo={bias})")
-
-        # Enviar plan a Telegram al arrancar
-        notifier.notify_plan_loaded(self.plan.to_dict())
 
         consecutive_errors = 0
         MAX_CONSECUTIVE_ERRORS = 5

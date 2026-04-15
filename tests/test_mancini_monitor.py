@@ -3,8 +3,10 @@
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -13,7 +15,7 @@ import pytest
 from scripts.mancini.config import DailyPlan, save_plan, save_weekly
 from scripts.mancini.detector import State, save_detectors, FailedBreakdownDetector
 from scripts.mancini.trade_manager import TradeStatus
-from scripts.mancini.monitor import ManciniMonitor
+from scripts.mancini.monitor import ManciniMonitor, ET
 
 
 @pytest.fixture
@@ -53,6 +55,14 @@ def monitor(plan_path, state_path, weekly_path):
 
 
 # ── Mock notifier para todos los tests ──────────────────────────────
+
+@pytest.fixture(autouse=True)
+def mock_now_et():
+    """Parchea _now_et para devolver 2026-04-10 (coincide con sample_plan.fecha)."""
+    fake_now = datetime(2026, 4, 10, 9, 30, 0, tzinfo=ET)
+    with patch("scripts.mancini.monitor._now_et", return_value=fake_now):
+        yield fake_now
+
 
 @pytest.fixture(autouse=True)
 def mock_notifier():
@@ -384,3 +394,47 @@ def test_alignment_in_notification(monitor, sample_plan, mock_notifier, weekly_p
     call_kwargs = mock_notifier.notify_signal.call_args
     assert call_kwargs.kwargs.get("alignment") == "ALIGNED" or \
            (len(call_kwargs.args) > 6 and call_kwargs.args[6] == "ALIGNED")
+
+
+# ── Date validation ────────────────────────────────────────────────
+
+def test_load_state_stale_plan_discarded(plan_path, state_path, weekly_path):
+    """Plan con fecha distinta a hoy se descarta."""
+    # Plan de ayer
+    plan = DailyPlan(
+        fecha="2026-04-09",
+        key_level_upper=6809,
+        targets_upper=[6819, 6830],
+        key_level_lower=6781,
+        targets_lower=[6766],
+    )
+    save_plan(plan, plan_path)
+
+    # _now_et devuelve 2026-04-10 (mock_now_et fixture)
+    m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
+                       weekly_path=weekly_path)
+    m.load_state()
+    assert m.plan is None
+    assert m.detectors == []
+
+
+def test_check_plan_updates_rejects_stale(monitor, sample_plan, plan_path):
+    """_check_plan_updates descarta plan recargado con fecha incorrecta."""
+    monitor.load_state()
+    assert monitor.plan is not None  # Plan de hoy (2026-04-10)
+
+    # Simular que alguien escribe un plan con fecha de ayer
+    import time
+    time.sleep(0.1)
+    stale_plan = DailyPlan(
+        fecha="2026-04-09",
+        key_level_upper=6800,
+        targets_upper=[6810],
+        key_level_lower=6770,
+        targets_lower=[6760],
+    )
+    save_plan(stale_plan, plan_path)
+
+    monitor._check_plan_updates()
+    # Debe mantener el plan original, no el stale
+    assert monitor.plan.fecha == "2026-04-10"

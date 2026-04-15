@@ -107,7 +107,7 @@ def main() -> None:
     p_monitor.add_argument("--start", type=int, default=None,
                            help="Hora inicio sesión ET (default: 7)")
     p_monitor.add_argument("--end", type=int, default=None,
-                           help="Hora fin sesión ET (default: 11)")
+                           help="Hora fin sesión ET (default: 16)")
 
     # status
     sub.add_parser("status", help="Muestra estado actual")

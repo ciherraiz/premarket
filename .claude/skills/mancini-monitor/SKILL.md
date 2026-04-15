@@ -36,7 +36,7 @@ El monitor:
 - Polls /ES cada 60 segundos via TastyTrade
 - Detecta patrones Failed Breakdown en los niveles del plan
 - Envia alertas Telegram en cada transicion de estado
-- Se auto-finaliza a las 11:00 ET
+- Se auto-finaliza a las 16:00 ET
 - Persiste estado en `outputs/mancini_state.json`
 
 ### Paso 4: Mostrar resumen de estado
@@ -49,7 +49,7 @@ Monitor Mancini arrancado.
   Upper:    6809 -> targets 6819, 6830
   Lower:    6781 -> targets 6766
   Intervalo: 60s
-  Sesion:   08:00-11:00 ET
+  Sesion:   07:00-16:00 ET
 ```
 
 ## Otros comandos utiles
@@ -64,6 +64,6 @@ uv run python scripts/mancini/run_mancini.py reset
 
 ## Notas
 
-- El monitor es un proceso de larga duracion — corre hasta las 11:00 ET o Ctrl+C
+- El monitor es un proceso de larga duracion — corre hasta las 16:00 ET o Ctrl+C
 - Si se interrumpe, el estado se persiste y se puede retomar
 - El scan de tweets (`/mancini-scan`) puede actualizar el plan en paralelo; el monitor detecta cambios automaticamente

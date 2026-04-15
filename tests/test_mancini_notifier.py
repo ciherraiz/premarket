@@ -18,7 +18,8 @@ def mock_telegram():
         yield mock
 
 
-def test_notify_plan_loaded(mock_telegram):
+def test_notify_plan_loaded_from_scan(mock_telegram):
+    """Llamada desde scan (sin session params) → sin línea Monitor activo."""
     plan = {
         "fecha": "2026-04-10",
         "key_level_upper": 6809,
@@ -36,6 +37,25 @@ def test_notify_plan_loaded(mock_telegram):
     assert "6781" in msg
     assert "6819" in msg
     assert "Chop zone" in msg
+    assert "Monitor activo" not in msg
+
+
+def test_notify_plan_loaded_from_monitor(mock_telegram):
+    """Llamada desde monitor (con session params) → línea Monitor activo dinámica."""
+    plan = {
+        "fecha": "2026-04-10",
+        "key_level_upper": 6809,
+        "targets_upper": [6819, 6830],
+        "key_level_lower": 6781,
+        "targets_lower": [6766],
+        "chop_zone": None,
+    }
+    result = notifier.notify_plan_loaded(plan, session_start=7, session_end=16)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "Mancini Plan" in msg
+    assert "Monitor activo 07:00" in msg
+    assert "16:00 ET" in msg
 
 
 def test_notify_plan_loaded_no_chop(mock_telegram):
