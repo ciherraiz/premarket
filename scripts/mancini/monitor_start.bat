@@ -1,7 +1,7 @@
 @echo off
 REM Lanza el monitor Mancini /ES como proceso de larga duración.
-REM Diseñado para ejecutarse desde Windows Task Scheduler a las 14:00 CEST (08:00 ET).
-REM El monitor corre hasta 11:00 ET y se auto-finaliza.
+REM Diseñado para ejecutarse desde Windows Task Scheduler a las 13:00 CEST (07:00 ET).
+REM El monitor corre hasta 16:00 ET y se auto-finaliza.
 
 cd /d "C:\Users\ciher\Documents\Development\premarket"
 

@@ -1,110 +1,181 @@
 # Tareas programadas — Referencia completa
 
 Documento de referencia para todas las tareas automáticas del sistema.
-Cada sesión de Claude Code debe recrear estos crons al inicio.
+
+## Decisiones de arquitectura
+
+### Scheduler: Windows Task Scheduler (obligatorio)
+
+**Todas** las tareas recurrentes del sistema se ejecutan mediante
+**Windows Task Scheduler**, que garantiza persistencia independientemente
+de si hay una sesión de Claude Code abierta.
+
+**Prohibido**: usar CronCreate, `mcp__scheduled-tasks`, o cualquier otro
+mecanismo que dependa de una sesión activa de Claude Code. Estos mecanismos
+son efímeros (se pierden al cerrar la sesión, auto-expiran tras 7 días) y
+han causado fallos de producción (2026-04-15: scans no ejecutados por falta
+de sesión activa).
+
+### Ejecución: scripts Python standalone
+
+Cada tarea se ejecuta mediante `uv run python scripts/mancini/run_mancini.py <subcomando>`.
+Los subcomandos disponibles son:
+
+| Subcomando     | Tipo          | Descripción                              |
+|----------------|---------------|------------------------------------------|
+| `scan`         | one-shot      | Fetch tweets + parse + save/merge plan   |
+| `weekly-scan`  | one-shot      | Fetch Big Picture + parse + save weekly  |
+| `monitor`      | larga duración | Polling /ES cada 60s, auto-para a las 16:00 ET |
+| `status`       | one-shot      | Muestra estado actual                    |
+| `reset`        | one-shot      | Resetea estado para nuevo día            |
+
+### Wrapper: batch files
+
+Cada tarea de Task Scheduler ejecuta un `.bat` en `scripts/mancini/` que:
+1. Hace `cd` al directorio del proyecto
+2. Añade `uv` al PATH
+3. Ejecuta el subcomando correspondiente
+4. Redirige output a `logs/mancini_scheduler.log`
 
 ---
 
-## 1. Mancini Scan (diario, entre semana)
+## Tareas registradas en Task Scheduler
 
-**Skill**: `/mancini-scan`
-**Ventana**: 07:00–11:30 ET (13:00–17:30 CEST)
-**Cadencia spec**: cada 10 min (ver nota abajo)
+### 1. ManciniScan (diario, entre semana)
 
-### Crons prácticos (3 disparos en momentos clave)
+**Script**: `scripts/mancini/scan_start.bat`
+**Subcomando**: `run_mancini.py scan`
+**Ventana**: 13:00–17:30 CEST (07:00–11:30 ET)
+**Cadencia**: cada 10 minutos dentro de la ventana
 
-| Cron (CEST) | Hora ET | Propósito |
-|---|---|---|
-| `3 13 * * 1-5` | 07:03 ET | Captura plan inicial de Mancini |
-| `3 14 * * 1-5` | 08:03 ET | Captura actualizaciones pre-apertura |
-| `3 15 * * 1-5` | 09:03 ET | Última revisión antes de las 09:25 ET |
+| Parámetro Task Scheduler | Valor |
+|---|---|
+| Nombre | `ManciniScan` |
+| Trigger | Lun-Vie, inicio 13:00 CEST, repetir cada 10 min durante 4h 30min |
+| Acción | `scripts/mancini/scan_start.bat` |
+| Múltiples instancias | No iniciar nueva si ya hay una corriendo |
 
-> **Nota**: el spec (`mancini_replicant.md`) define scan cada 10 min, pero cada
-> invocación es un skill de Claude (costoso). 3 disparos cubren los momentos
-> críticos. Si se migra a un script Python standalone, usar `*/10 13-17 * * 1-5`.
+El scan es idempotente: si no hay tweets nuevos, termina sin error y sin
+notificar (evita spam). Solo notifica a Telegram cuando el plan cambia.
 
----
+**Prerequisitos**: `cookies.json` (sesión X) y `ANTHROPIC_API_KEY` en `.env`
 
-## 2. Mancini Monitor (diario, entre semana)
+### 2. ManciniMonitor (diario, entre semana)
 
-**Skill**: `/mancini-monitor`
-**Ventana**: 08:00–16:00 ET (14:00–22:00 CEST)
-**Cadencia**: una sola invocación (el monitor corre su propio loop de polling cada 60s)
+**Script**: `scripts/mancini/monitor_start.bat`
+**Subcomando**: `run_mancini.py monitor`
+**Ventana**: 13:00–22:00 CEST (07:00–16:00 ET)
+**Cadencia**: una sola invocación (el monitor corre su propio loop de polling)
 
-| Cron (CEST) | Hora ET | Propósito |
-|---|---|---|
-| `7 14 * * 1-5` | 08:07 ET | Arranca monitor (auto-para a las 16:00 ET) |
+| Parámetro Task Scheduler | Valor |
+|---|---|
+| Nombre | `ManciniMonitor` |
+| Trigger | Lun-Vie, inicio 13:00 CEST |
+| Acción | `scripts/mancini/monitor_start.bat` |
+| Múltiples instancias | No iniciar nueva si ya hay una corriendo |
 
-**Prerequisito**: el scan debe haber cargado `outputs/mancini_plan.json` antes.
-El cron de 14:07 se ejecuta 4 minutos después del scan de 14:03, dando margen
-para que el plan esté listo.
+**Prerequisito**: el scan debe haber cargado `outputs/mancini_plan.json`.
+El monitor arranca a las 13:00 pero espera internamente hasta `SESSION_START_HOUR`
+(07:00 ET) para empezar a pollear. Si no hay plan del día, se auto-para.
 
----
+**Session end**: el monitor se auto-finaliza a las 16:00 ET (`SESSION_END_HOUR`).
 
-## 3. Mancini Weekly Scan (fines de semana)
+### 3. ManciniMonitorDomingo (domingos)
 
-**Skill**: `/mancini-weekly-scan`
+**Script**: `scripts/mancini/monitor_sunday.bat`
+**Subcomando**: `run_mancini.py monitor --start 13 --end 24`
+**Ventana**: 19:00 CEST domingo – 00:00 ET lunes
+
+| Parámetro Task Scheduler | Valor |
+|---|---|
+| Nombre | `ManciniMonitorDomingo` |
+| Trigger | Domingos, inicio 19:00 CEST |
+| Acción | `scripts/mancini/monitor_sunday.bat` |
+
+Futuros /ES abren a las 18:00 ET los domingos. Este monitor usa la ventana
+extendida `--start 13 --end 24` para cubrir la sesión nocturna.
+
+### 4. ManciniWeeklyScan (fines de semana)
+
+**Script**: `scripts/mancini/weekly_scan_start.bat`
+**Subcomando**: `run_mancini.py weekly-scan`
 **Días**: sábado y domingo
-**Hora**: 18:00 CEST (12:00 ET)
 
-| Cron (CEST) | Días | Propósito |
-|---|---|---|
-| `3 18 * * 0,6` | sáb, dom | Captura "Big Picture View" semanal de Mancini |
+| Parámetro Task Scheduler | Valor |
+|---|---|
+| Nombre | `ManciniWeeklyScan` |
+| Trigger | Sáb y Dom, inicio 18:00 CEST, repetir cada 2h durante 6h |
+| Acción | `scripts/mancini/weekly_scan_start.bat` |
+| Múltiples instancias | No iniciar nueva si ya hay una corriendo |
 
-> Mancini publica su visión semanal durante el fin de semana. Se ejecuta ambos
-> días porque a veces publica el sábado y a veces el domingo.
+Mancini publica su "Big Picture View" el fin de semana (sábado o domingo,
+hora variable). Se escanea cada 2 horas para capturarlo cuando aparezca.
+El script es idempotente: si ya existe plan semanal, sobreescribe con la
+versión más reciente.
 
----
+### 5. SPX Premarket Analysis (entre semana)
 
-## 4. SPX Premarket Analysis (entre semana)
-
-**Skill**: `/premarket-analysis`
-**Spec**: `specs/skill_premarket_analysis.md`
-
-| Cron (ET) | Hora CEST | Propósito |
-|---|---|---|
-| `10 9 * * 1-5` | 15:10 CEST | Scorecard premarket (orientativo) |
-| `15 10 * * 1-5` | 16:15 CEST | Scorecard open phase (decisión final) |
-
-> Estos se crean con `mcp__scheduled-tasks__create_scheduled_task` usando
-> timezone `America/New_York`. Ver spec para detalles.
+**Nota**: esta tarea sigue usando `mcp__scheduled-tasks` porque requiere
+una sesión de Claude Code activa para ejecutar el skill `/premarket-analysis`.
+Es aceptable porque el usuario la lanza manualmente al iniciar sesión.
 
 ---
 
 ## Resumen visual — Día entre semana (horario CEST)
 
 ```
-13:00 ─── Ventana scan abierta ──────────────────────────────────────
-13:03     /mancini-scan          ← plan inicial
-14:00 ─── Ventana monitor abierta ───────────────────────────────────
-14:03     /mancini-scan          ← actualización pre-apertura
-14:07     /mancini-monitor       ← arranca polling /ES
-15:03     /mancini-scan          ← última revisión
-15:10     /premarket-analysis    ← scorecard premarket
-15:30 ─── Apertura mercado (09:30 ET) ───────────────────────────────
-16:15     /premarket-analysis    ← scorecard open (decisión)
-17:30 ─── Fin ventana scan ──────────────────────────────────────────
-22:00 ─── Fin ventana monitor ───────────────────────────────────────
+13:00 ─── ManciniScan comienza (cada 10 min) ───────────────────
+13:00     ManciniMonitor arranca (espera hasta 07:00 ET)
+14:00 ─── Monitor empieza polling /ES ───────────────────────────
+15:30 ─── Apertura mercado (09:30 ET) ───────────────────────────
+17:30 ─── ManciniScan termina ───────────────────────────────────
+22:00 ─── ManciniMonitor auto-para (16:00 ET) ───────────────────
 ```
 
 ## Resumen visual — Fin de semana (horario CEST)
 
 ```
-18:03     /mancini-weekly-scan   ← Big Picture View semanal
+18:00     ManciniWeeklyScan (cada 2h hasta 00:00)
+19:00     ManciniMonitorDomingo (solo domingos)
 ```
 
 ---
 
-## Limitaciones actuales
+## Ficheros involucrados
 
-- **Session-only**: los crons de CronCreate solo viven mientras la sesión de
-  Claude Code esté abierta. Si se cierra, hay que recrearlos.
-- **Auto-expire**: los crons recurrentes se auto-eliminan tras 7 días.
-- **No persistentes**: aunque se use `durable: true`, actualmente no se
-  escriben a disco.
+| Fichero | Propósito |
+|---|---|
+| `scripts/mancini/run_mancini.py` | CLI con todos los subcomandos |
+| `scripts/mancini/scan_start.bat` | Wrapper para Task Scheduler (scan) |
+| `scripts/mancini/weekly_scan_start.bat` | Wrapper para Task Scheduler (weekly) |
+| `scripts/mancini/monitor_start.bat` | Wrapper para Task Scheduler (monitor L-V) |
+| `scripts/mancini/monitor_sunday.bat` | Wrapper para Task Scheduler (monitor dom) |
+| `logs/mancini_scheduler.log` | Output de todas las ejecuciones |
+| `logs/mancini_scans.jsonl` | Registro de cada scan (éxito/fallo) |
 
-### Solución futura
+---
 
-Migrar los scans a scripts Python standalone invocados por el scheduler del
-sistema operativo (Task Scheduler en Windows, cron en Linux) para eliminar
-la dependencia de una sesión Claude activa.
+## Gestión de las tareas
+
+### Listar tareas registradas
+
+```cmd
+schtasks /query /tn "ManciniScan"
+schtasks /query /tn "ManciniMonitor"
+schtasks /query /tn "ManciniMonitorDomingo"
+schtasks /query /tn "ManciniWeeklyScan"
+```
+
+### Ejecutar manualmente
+
+```bash
+uv run python scripts/mancini/run_mancini.py scan
+uv run python scripts/mancini/run_mancini.py weekly-scan
+uv run python scripts/mancini/run_mancini.py monitor
+```
+
+### Eliminar tarea
+
+```cmd
+schtasks /delete /tn "NombreTarea" /f
+```

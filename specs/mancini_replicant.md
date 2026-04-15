@@ -102,7 +102,7 @@ Proceso Python de larga duración. Cada 60 segundos:
 4. Alimenta detectores con `process_tick()`
 5. Gestiona trades activos
 6. Alerta Telegram si hay transición
-7. Auto-finaliza a las 11:00 ET
+7. Auto-finaliza a las 16:00 ET
 
 ### 5. notifier.py — Alertas Telegram
 
@@ -130,7 +130,7 @@ Append-only en `logs/mancini_trades.jsonl`. Cada trade:
 }
 ```
 
-### 7. tweet_fetcher.py + tweet_parser.py + Skill /mancini-scan
+### 7. tweet_fetcher.py + tweet_parser.py
 
 **tweet_fetcher.py** — obtiene tweets vía `httpx` + GraphQL API de X (session cookies):
 1. Carga cookies exportadas con Cookie-Editor (`cookies.json`)
@@ -147,27 +147,32 @@ Ver `specs/mancini_realtime_tweets.md` para detalle de la migración de UserTwee
 3. Parsea respuesta JSON a `DailyPlan`
 4. Retorna `None` si Haiku determina que no hay plan nuevo
 
-**Skill /mancini-scan** — orquesta fetch + parse + save:
-1. `fetch_tweets_sync()` → tweets del día
-2. `parse_tweets_to_plan()` → DailyPlan o None
-3. Merge con plan existente si ya hay uno de hoy
-4. `save_plan()` → `outputs/mancini_plan.json`
-
 Ficheros requeridos: `cookies.json` (exportado con Cookie-Editor desde x.com)
 Env vars requeridas: `ANTHROPIC_API_KEY` (opcional: `X_COOKIES_FILE` para ruta custom)
 
-### 8. run_mancini.py — CLI
+### 8. run_mancini.py — CLI (punto de entrada único)
 
 Subcomandos:
+- `scan` — fetch tweets + parse + save/merge plan diario
+- `weekly-scan` — fetch Big Picture View + parse + save plan semanal
 - `monitor` — arranca loop de polling (proceso larga duración)
 - `status` — muestra estado actual (plan + máquinas + trades)
 - `reset` — resetea estado para nuevo día
 
+### 9. Scheduling — Windows Task Scheduler
+
+**Obligatorio**: todas las tareas recurrentes usan Windows Task Scheduler.
+No usar CronCreate ni mecanismos dependientes de sesión Claude.
+
+Ver `specs/scheduled_tasks.md` para la configuración completa de cada tarea.
+
+Cada tarea se ejecuta vía un `.bat` wrapper en `scripts/mancini/` que invoca
+`run_mancini.py <subcomando>`.
+
 ## Ventanas de trading
 
-- 07:00-11:30 ET — scan de tweets (scheduled task cada 10 min)
-- 08:00-11:00 ET — monitor activo (polling cada 60s)
-- 14:00-16:00 ET — sesión tarde (opcional)
+- 07:00-11:30 ET — scan de tweets (Task Scheduler cada 10 min)
+- 07:00-16:00 ET — monitor activo (polling cada 60s, auto-para a las 16:00 ET)
 
 ## Ficheros de estado
 
