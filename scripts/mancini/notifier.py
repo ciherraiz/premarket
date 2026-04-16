@@ -162,6 +162,35 @@ def notify_weekly_plan(plan: dict) -> bool:
     return send_telegram(msg.strip())
 
 
+def notify_adjustment(adj) -> bool:
+    """Alerta: ajuste intraday clasificado por el LLM.
+
+    Muestra el tweet original de Mancini y la conclusion del clasificador
+    para que el trader valore si el ajuste automatico es correcto.
+    """
+    from scripts.mancini.config import PlanAdjustment
+
+    icons = {
+        "INVALIDATION": "🚫",
+        "LEVEL_UPDATE": "📐",
+        "TARGET_UPDATE": "🎯",
+        "BIAS_SHIFT": "🔄",
+        "CONTEXT_UPDATE": "💬",
+    }
+    icon = icons.get(adj.adjustment_type, "📝")
+
+    msg = "\n".join([
+        f"{icon} *Mancini Update*",
+        "",
+        f"📝 @AdamMancini4:",
+        f'"{_esc(adj.tweet_text)}"',
+        "",
+        f"🤖 *Conclusión:* {_esc(adj.raw_reasoning)}",
+    ])
+
+    return send_telegram(msg)
+
+
 def notify_scan_failure(reason: str) -> bool:
     """Alerta: el scan de tweets falló o no encontró plan."""
     msg = "\n".join([

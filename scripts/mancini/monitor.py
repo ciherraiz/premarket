@@ -21,7 +21,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scripts.mancini.config import DailyPlan, load_plan, load_weekly, PLAN_PATH, WEEKLY_PLAN_PATH
+from scripts.mancini.config import (
+    DailyPlan, PlanAdjustment, IntraDayState,
+    load_plan, load_weekly, save_plan, save_intraday_state, load_intraday_state,
+    PLAN_PATH, WEEKLY_PLAN_PATH, INTRADAY_STATE_PATH,
+)
 from scripts.mancini.detector import (
     FailedBreakdownDetector,
     State,
@@ -31,7 +35,7 @@ from scripts.mancini.detector import (
     STATE_PATH,
 )
 from scripts.mancini.trade_manager import TradeManager, TradeStatus
-from scripts.mancini.logger import append_trade
+from scripts.mancini.logger import append_trade, append_adjustment
 from scripts.mancini import notifier
 
 ET = ZoneInfo("America/New_York")
@@ -57,6 +61,7 @@ class ManciniMonitor:
     def __init__(self, client=None, poll_interval: int = POLL_INTERVAL_S,
                  plan_path: Path = PLAN_PATH, state_path: Path = STATE_PATH,
                  weekly_path: Path = WEEKLY_PLAN_PATH,
+                 intraday_path: Path = INTRADAY_STATE_PATH,
                  session_start: int = SESSION_START_HOUR,
                  session_end: int = SESSION_END_HOUR):
         self.client = client
@@ -64,12 +69,14 @@ class ManciniMonitor:
         self.plan_path = plan_path
         self.state_path = state_path
         self.weekly_path = weekly_path
+        self.intraday_path = intraday_path
         self.session_start = session_start
         self.session_end = session_end
         self.plan: DailyPlan | None = None
         self.weekly: DailyPlan | None = None
         self.detectors: list[FailedBreakdownDetector] = []
         self.trade_manager = TradeManager()
+        self.intraday_state = IntraDayState()
         self._plan_mtime: float = 0
 
     def load_state(self) -> None:
@@ -87,6 +94,8 @@ class ManciniMonitor:
         if self.plan:
             self.trade_manager.fecha = self.plan.fecha
             self._plan_mtime = self.plan_path.stat().st_mtime if self.plan_path.exists() else 0
+
+        self.intraday_state = load_intraday_state(self.intraday_path)
 
         self.detectors = load_detectors(self.state_path)
         if not self.detectors and self.plan:
@@ -136,8 +145,9 @@ class ManciniMonitor:
         return "MISALIGNED"
 
     def save_state(self) -> None:
-        """Persiste detectores en disco."""
+        """Persiste detectores y estado intraday en disco."""
         save_detectors(self.detectors, self.state_path)
+        save_intraday_state(self.intraday_state, self.intraday_path)
 
     def _check_plan_updates(self) -> None:
         """Recarga el plan si el fichero ha cambiado (scan de tweets actualizó)."""
@@ -326,6 +336,140 @@ class ManciniMonitor:
 
         return sorted(targets)
 
+    # ── Intraday tweet updates ─────────────────────────────────────
+
+    def check_intraday_updates(self) -> list[PlanAdjustment]:
+        """Fetch tweets nuevos, clasificar y aplicar ajustes al plan.
+
+        Retorna lista de adjustments aplicados (para testing).
+        """
+        from scripts.mancini.tweet_fetcher import fetch_mancini_tweets
+        from scripts.mancini.tweet_classifier import classify_tweet
+
+        applied = []
+
+        try:
+            tweets = fetch_mancini_tweets(max_tweets=10)
+        except Exception as e:
+            _log(f"Error fetching tweets intraday: {e}")
+            return applied
+
+        new_tweets = [
+            t for t in tweets
+            if t["id"] not in self.intraday_state.processed_tweet_ids
+        ]
+
+        for tweet in new_tweets:
+            self.intraday_state.processed_tweet_ids.add(tweet["id"])
+            try:
+                adjustment = classify_tweet(
+                    tweet["text"],
+                    tweet["id"],
+                    tweet["created_at"],
+                    self.plan,
+                )
+            except Exception as e:
+                _log(f"Error clasificando tweet {tweet['id']}: {e}")
+                continue
+
+            self.intraday_state.adjustments.append(adjustment)
+            append_adjustment(adjustment)
+
+            if adjustment.adjustment_type != "NO_ACTION":
+                self._apply_adjustment(adjustment)
+                notifier.notify_adjustment(adjustment)
+                applied.append(adjustment)
+
+        self.intraday_state.last_check = datetime.now(timezone.utc).isoformat()
+        return applied
+
+    def _apply_adjustment(self, adj: PlanAdjustment) -> None:
+        """Aplica un ajuste al plan y detectores activos."""
+        match adj.adjustment_type:
+            case "INVALIDATION":
+                self._handle_invalidation(adj)
+            case "LEVEL_UPDATE":
+                self._handle_level_update(adj)
+            case "TARGET_UPDATE":
+                self._handle_target_update(adj)
+            case "BIAS_SHIFT":
+                self._handle_bias_shift(adj)
+            case "CONTEXT_UPDATE":
+                self._handle_context_update(adj)
+
+    def _handle_invalidation(self, adj: PlanAdjustment) -> None:
+        scope = adj.details.get("scope", "full")
+        if scope == "full":
+            for det in self.detectors:
+                if det.state not in (State.DONE, State.EXPIRED):
+                    det.mark_expired()
+            _log("Plan invalidado completamente — detectores pausados")
+        elif scope in ("upper", "lower"):
+            det = self._get_detector_by_side(scope)
+            if det and det.state not in (State.DONE, State.EXPIRED):
+                det.mark_expired()
+                _log(f"Nivel {scope} invalidado — detector pausado")
+
+    def _handle_level_update(self, adj: PlanAdjustment) -> None:
+        side = adj.details.get("side")
+        new_level = adj.details.get("new_level")
+        if not side or new_level is None:
+            return
+        new_level = float(new_level)
+        if side == "upper":
+            self.plan.key_level_upper = new_level
+        else:
+            self.plan.key_level_lower = new_level
+        det = self._get_detector_by_side(side)
+        if det and det.state == State.WATCHING:
+            det.level = new_level
+        save_plan(self.plan, self.plan_path)
+        _log(f"Nivel {side} actualizado a {new_level}")
+
+    def _handle_target_update(self, adj: PlanAdjustment) -> None:
+        side = adj.details.get("side")
+        new_targets = adj.details.get("new_targets", [])
+        replace = adj.details.get("replace", False)
+        if not side or not new_targets:
+            return
+        new_targets = [float(t) for t in new_targets]
+        if side == "upper":
+            if replace:
+                self.plan.targets_upper = new_targets
+            else:
+                self.plan.targets_upper = sorted(
+                    set(self.plan.targets_upper + new_targets)
+                )
+        else:
+            if replace:
+                self.plan.targets_lower = new_targets
+            else:
+                self.plan.targets_lower = sorted(
+                    set(self.plan.targets_lower + new_targets), reverse=True
+                )
+        save_plan(self.plan, self.plan_path)
+        _log(f"Targets {side} actualizados: {new_targets}")
+
+    def _handle_bias_shift(self, adj: PlanAdjustment) -> None:
+        new_bias = adj.details.get("new_bias", "")
+        self.plan.notes = f"Bias shift: {new_bias} (via intraday update)"
+        save_plan(self.plan, self.plan_path)
+        active_trade = self.trade_manager.active_trade()
+        if active_trade:
+            new_alignment = self.calc_alignment(active_trade.direction)
+            _log(f"Alignment recalculado: {active_trade.alignment} -> {new_alignment}")
+        _log(f"Sesgo actualizado: {new_bias}")
+
+    def _handle_context_update(self, adj: PlanAdjustment) -> None:
+        _log(f"Context update: {adj.details.get('summary', adj.raw_reasoning)}")
+
+    def _get_detector_by_side(self, side: str) -> FailedBreakdownDetector | None:
+        """Busca detector por lado (upper/lower)."""
+        for d in self.detectors:
+            if d.side == side:
+                return d
+        return None
+
     def close_session(self) -> None:
         """Cierra la sesión: EOD trades activos, envía resumen."""
         now = _now_et()
@@ -430,6 +574,11 @@ class ManciniMonitor:
 
                     _log(f"ES={price:.2f}")
                     self.process_tick(price)
+
+                    # Clasificar tweets intraday nuevos
+                    if self.plan:
+                        self.check_intraday_updates()
+
                     self.save_state()
 
                     consecutive_errors = 0
