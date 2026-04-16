@@ -12,6 +12,7 @@ from scripts.mancini.trade_manager import Trade
 
 TRADES_LOG_PATH = Path("logs/mancini_trades.jsonl")
 SCAN_LOG_PATH = Path("logs/mancini_scans.jsonl")
+ADJUSTMENTS_LOG_PATH = Path("logs/mancini_adjustments.jsonl")
 
 
 def append_scan_result(
@@ -31,6 +32,24 @@ def append_scan_result(
         "plan_updated": plan_updated,
         "reason": reason,
         "fecha": fecha,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def append_adjustment(adj, path: Path = ADJUSTMENTS_LOG_PATH) -> None:
+    """Registra un ajuste intraday en el fichero JSONL."""
+    from scripts.mancini.config import PlanAdjustment
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "tweet_id": adj.tweet_id,
+        "tweet_text": adj.tweet_text,
+        "timestamp": adj.timestamp,
+        "adjustment_type": adj.adjustment_type,
+        "details": adj.details,
+        "reasoning": adj.raw_reasoning,
+        "applied_at": datetime.now(timezone.utc).isoformat(),
     }
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")

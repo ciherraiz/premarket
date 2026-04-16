@@ -27,7 +27,10 @@ from zoneinfo import ZoneInfo
 # Asegurar que el proyecto raíz está en sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from scripts.mancini.config import load_plan, save_plan, save_weekly, PLAN_PATH
+from scripts.mancini.config import (
+    load_plan, save_plan, save_weekly, load_intraday_state,
+    PLAN_PATH, INTRADAY_STATE_PATH,
+)
 from scripts.mancini.detector import load_detectors, STATE_PATH, save_detectors
 from scripts.mancini.monitor import ManciniMonitor
 
@@ -207,6 +210,40 @@ def cmd_status(args) -> None:
         print(f"📁 State: no existe ({STATE_PATH})")
 
 
+def cmd_intraday_status(args) -> None:
+    """Muestra el estado del clasificador intraday."""
+    state = load_intraday_state()
+
+    print(f"📡 Intraday Classifier Status")
+    print(f"   Tweets procesados: {len(state.processed_tweet_ids)}")
+    print(f"   Último check: {state.last_check or 'nunca'}")
+    print()
+
+    if not state.adjustments:
+        print("   Sin ajustes hoy")
+        return
+
+    # Contar por tipo
+    by_type: dict[str, int] = {}
+    for adj in state.adjustments:
+        by_type[adj.adjustment_type] = by_type.get(adj.adjustment_type, 0) + 1
+
+    print(f"   Ajustes por tipo:")
+    for atype, count in sorted(by_type.items()):
+        print(f"     {atype}: {count}")
+    print()
+
+    # Mostrar ajustes actionables (no NO_ACTION)
+    actionable = [a for a in state.adjustments if a.adjustment_type != "NO_ACTION"]
+    if actionable:
+        print(f"   Ajustes aplicados ({len(actionable)}):")
+        for adj in actionable:
+            tweet_preview = adj.tweet_text[:80] + ("..." if len(adj.tweet_text) > 80 else "")
+            print(f"     [{adj.adjustment_type}] \"{tweet_preview}\"")
+            print(f"       → {adj.raw_reasoning}")
+            print()
+
+
 def cmd_reset(args) -> None:
     """Resetea estado para un nuevo día."""
     if STATE_PATH.exists():
@@ -214,6 +251,12 @@ def cmd_reset(args) -> None:
         print(f"✓ Eliminado {STATE_PATH}")
     else:
         print(f"  {STATE_PATH} no existía")
+
+    if INTRADAY_STATE_PATH.exists():
+        INTRADAY_STATE_PATH.unlink()
+        print(f"✓ Eliminado {INTRADAY_STATE_PATH}")
+    else:
+        print(f"  {INTRADAY_STATE_PATH} no existía")
 
     if not args.keep_plan and PLAN_PATH.exists():
         PLAN_PATH.unlink()
@@ -246,6 +289,9 @@ def main() -> None:
     # status
     sub.add_parser("status", help="Muestra estado actual")
 
+    # intraday-status
+    sub.add_parser("intraday-status", help="Muestra estado del clasificador intraday")
+
     # reset
     p_reset = sub.add_parser("reset", help="Resetea estado para nuevo día")
     p_reset.add_argument("--keep-plan", action="store_true",
@@ -261,6 +307,8 @@ def main() -> None:
         cmd_monitor(args)
     elif args.command == "status":
         cmd_status(args)
+    elif args.command == "intraday-status":
+        cmd_intraday_status(args)
     elif args.command == "reset":
         cmd_reset(args)
 

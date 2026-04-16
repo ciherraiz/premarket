@@ -14,6 +14,7 @@ from pathlib import Path
 
 PLAN_PATH = Path("outputs/mancini_plan.json")
 WEEKLY_PLAN_PATH = Path("outputs/mancini_weekly.json")
+INTRADAY_STATE_PATH = Path("outputs/mancini_intraday.json")
 
 
 @dataclass
@@ -85,6 +86,64 @@ def load_plan(path: Path = PLAN_PATH) -> DailyPlan | None:
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
     return DailyPlan.from_dict(data)
+
+
+@dataclass
+class PlanAdjustment:
+    """Ajuste intraday emitido por el clasificador de tweets."""
+
+    tweet_id: str
+    tweet_text: str
+    timestamp: str  # ISO timestamp del tweet
+    adjustment_type: str  # INVALIDATION, LEVEL_UPDATE, TARGET_UPDATE, BIAS_SHIFT, CONTEXT_UPDATE, NO_ACTION
+    details: dict = field(default_factory=dict)
+    raw_reasoning: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> PlanAdjustment:
+        return cls(**d)
+
+
+@dataclass
+class IntraDayState:
+    """Estado del clasificador intraday: tweets procesados y ajustes emitidos."""
+
+    processed_tweet_ids: set[str] = field(default_factory=set)
+    adjustments: list[PlanAdjustment] = field(default_factory=list)
+    last_check: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "processed_tweet_ids": sorted(self.processed_tweet_ids),
+            "adjustments": [a.to_dict() for a in self.adjustments],
+            "last_check": self.last_check,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> IntraDayState:
+        return cls(
+            processed_tweet_ids=set(d.get("processed_tweet_ids", [])),
+            adjustments=[PlanAdjustment.from_dict(a) for a in d.get("adjustments", [])],
+            last_check=d.get("last_check", ""),
+        )
+
+
+def save_intraday_state(state: IntraDayState, path: Path = INTRADAY_STATE_PATH) -> None:
+    """Persiste el estado intraday en JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state.to_dict(), indent=2, ensure_ascii=False),
+                    encoding="utf-8")
+
+
+def load_intraday_state(path: Path = INTRADAY_STATE_PATH) -> IntraDayState:
+    """Carga el estado intraday desde JSON. Retorna estado vacío si no existe."""
+    if not path.exists():
+        return IntraDayState()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return IntraDayState.from_dict(data)
 
 
 def save_weekly(plan: DailyPlan, path: Path = WEEKLY_PLAN_PATH) -> None:
