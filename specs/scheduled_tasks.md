@@ -99,7 +99,25 @@ aparece, el monitor lo carga y empieza a pollear /ES.
 Futuros /ES abren a las 18:00 ET los domingos. Este monitor usa la ventana
 extendida `--start 13 --end 24` para cubrir la sesión nocturna.
 
-### 4. ManciniWeeklyScan (fines de semana)
+### 4. ManciniScanDomingo (domingos)
+
+**Script**: `scripts/mancini/scan_sunday.bat`
+**Subcomando**: `run_mancini.py scan`
+**Ventana**: 18:00–23:00 CEST domingo (12:00–17:00 ET)
+**Cadencia**: cada 10 minutos dentro de la ventana
+
+| Parámetro Task Scheduler | Valor |
+|---|---|
+| Nombre | `ManciniScanDomingo` |
+| Trigger | Domingos, inicio 18:00 CEST, repetir cada 10 min durante 5h |
+| Acción | `scripts/mancini/scan_sunday.bat` |
+| Múltiples instancias | No iniciar nueva si ya hay una corriendo |
+
+Mancini a veces publica niveles el domingo por la tarde para la sesión
+nocturna. Este scan cubre desde la apertura de futuros (18:00 ET) hasta
+las 23:00 CEST. Reutiliza el mismo subcomando `scan` que entre semana.
+
+### 5. ManciniWeeklyScan (fines de semana)
 
 **Script**: `scripts/mancini/weekly_scan_start.bat`
 **Subcomando**: `run_mancini.py weekly-scan`
@@ -117,11 +135,47 @@ hora variable). Se escanea cada 2 horas para capturarlo cuando aparezca.
 El script es idempotente: si ya existe plan semanal, sobreescribe con la
 versión más reciente.
 
-### 5. SPX Premarket Analysis (entre semana)
+### 6. SPX Premarket + Open Analysis (entre semana)
 
-**Nota**: esta tarea sigue usando `mcp__scheduled-tasks` porque requiere
-una sesión de Claude Code activa para ejecutar el skill `/premarket-analysis`.
-Es aceptable porque el usuario la lanza manualmente al iniciar sesión.
+**Nota**: estas tareas usan `mcp__scheduled-tasks` (no Task Scheduler)
+porque ejecutan skills de Claude Code (`/premarket-analysis`,
+`/open-analysis`) que requieren una sesión activa. Ver sección
+"Tareas en `mcp__scheduled-tasks`" más abajo para detalle.
+
+---
+
+## Tareas en `mcp__scheduled-tasks` (Claude Code)
+
+`mcp__scheduled-tasks` es un scheduler de Claude Code que ejecuta skills
+(ficheros `SKILL.md`) dentro de una sesión activa. A diferencia de Task
+Scheduler, **requiere que Claude Code esté abierto** para funcionar.
+
+### Tareas activas (requieren sesión Claude Code)
+
+| Tarea | Horario | Motivo |
+|---|---|---|
+| `spx-premarket-analysis` | L-V 15:10 CEST (09:10 ET) | Ejecuta skill `/premarket-analysis` que necesita Claude |
+| `spx-open-analysis` | L-V 16:25 CEST (10:15 ET) | Ejecuta skill `/open-analysis` que necesita Claude |
+
+Estas tareas son aceptables en `mcp__scheduled-tasks` porque el usuario
+abre sesión manualmente antes de la apertura del mercado.
+
+### Tareas legacy Mancini (desactivadas 2026-04-15)
+
+Las siguientes tareas fueron **desactivadas** tras la migración a Windows
+Task Scheduler. Contenían código Python inline en sus `SKILL.md` que
+duplicaba la lógica de `run_mancini.py` — ejecutaban exactamente la misma
+lógica de fetch/parse/notify pero dentro de una sesión de Claude Code.
+
+| Tarea Claude Code | Reemplazada por | Estado |
+|---|---|---|
+| `mancini-scan` | ManciniScan | Desactivada |
+| `mancini-weekly-scan` | ManciniWeeklyScan | Desactivada |
+| `mancini-scan-domingo` | ManciniScanDomingo | Desactivada |
+| `mancini-monitor-start` | ManciniMonitor | Desactivada |
+
+Los ficheros SKILL.md persisten en `~/.claude/scheduled-tasks/mancini-*/`
+pero no se ejecutan. No hay API de borrado, solo desactivación.
 
 ---
 
@@ -138,8 +192,10 @@ Es aceptable porque el usuario la lanza manualmente al iniciar sesión.
 ## Resumen visual — Fin de semana (horario CEST)
 
 ```
-18:00     ManciniWeeklyScan (cada 2h hasta 00:00)
-19:00     ManciniMonitorDomingo (solo domingos)
+18:00     ManciniWeeklyScan (Sab+Dom, cada 2h hasta 00:00)
+18:00 ─── ManciniScanDomingo comienza (Dom, cada 10 min) ───────
+19:00     ManciniMonitorDomingo (Dom, espera plan + polling /ES)
+23:00 ─── ManciniScanDomingo termina ───────────────────────────
 ```
 
 ---
@@ -152,6 +208,7 @@ Es aceptable porque el usuario la lanza manualmente al iniciar sesión.
 | `scripts/mancini/scan_start.bat` | Wrapper para Task Scheduler (scan) |
 | `scripts/mancini/weekly_scan_start.bat` | Wrapper para Task Scheduler (weekly) |
 | `scripts/mancini/monitor_start.bat` | Wrapper para Task Scheduler (monitor L-V) |
+| `scripts/mancini/scan_sunday.bat` | Wrapper para Task Scheduler (scan dom) |
 | `scripts/mancini/monitor_sunday.bat` | Wrapper para Task Scheduler (monitor dom) |
 | `logs/mancini_scheduler.log` | Output de todas las ejecuciones |
 | `logs/mancini_scans.jsonl` | Registro de cada scan (éxito/fallo) |
@@ -165,6 +222,7 @@ Es aceptable porque el usuario la lanza manualmente al iniciar sesión.
 ```cmd
 schtasks /query /tn "ManciniScan"
 schtasks /query /tn "ManciniMonitor"
+schtasks /query /tn "ManciniScanDomingo"
 schtasks /query /tn "ManciniMonitorDomingo"
 schtasks /query /tn "ManciniWeeklyScan"
 ```
