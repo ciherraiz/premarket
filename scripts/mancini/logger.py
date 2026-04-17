@@ -13,6 +13,7 @@ from scripts.mancini.trade_manager import Trade
 TRADES_LOG_PATH = Path("logs/mancini_trades.jsonl")
 SCAN_LOG_PATH = Path("logs/mancini_scans.jsonl")
 ADJUSTMENTS_LOG_PATH = Path("logs/mancini_adjustments.jsonl")
+GATE_LOG_PATH = Path("logs/mancini_gate.jsonl")
 
 
 def append_scan_result(
@@ -50,6 +51,22 @@ def append_adjustment(adj, path: Path = ADJUSTMENTS_LOG_PATH) -> None:
         "details": adj.details,
         "reasoning": adj.raw_reasoning,
         "applied_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def append_gate_decision(decision, level: float, price: float,
+                         path: Path = GATE_LOG_PATH) -> None:
+    """Registra una decisión del Execution Gate en el fichero JSONL."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "price": price,
+        "execute": decision.execute,
+        "reasoning": decision.reasoning,
+        "risk_factors": decision.risk_factors,
     }
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")

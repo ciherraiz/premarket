@@ -111,14 +111,10 @@ def notify_partial_exit(price: float, pnl_pts: float,
 
 
 def notify_trade_closed(reason: str, entry: float, exit_price: float,
-                        pnl_total: float, pnl_partial: float | None = None,
-                        pnl_runner: float | None = None) -> bool:
+                        pnl_total: float) -> bool:
     """Alerta: trade cerrado con resumen P&L."""
     reason_emoji = {
-        "TARGET_1": "🎯",
-        "TARGET_2": "🎯🎯",
         "STOP": "🛑",
-        "RUNNER_STOP": "🔄",
         "EOD": "🕐",
         "MANUAL": "✋",
     }
@@ -129,15 +125,58 @@ def notify_trade_closed(reason: str, entry: float, exit_price: float,
         f"{emoji} *Trade cerrado \\| {_esc(reason)}*",
         "",
         f"▶️ Entry: {_esc(entry)} → Exit: {_esc(exit_price)}",
+        f"📊 *P&L total: {pnl_sign}{_esc(f'{pnl_total:.1f}')} pts*",
     ]
 
-    if pnl_partial is not None and pnl_runner is not None:
-        lines.append(
-            f"💰 Parcial: \\+{_esc(f'{pnl_partial:.0f}')} pts "
-            f"\\| Runner: {_esc(f'{pnl_runner:+.0f}')} pts"
-        )
+    return send_telegram("\n".join(lines))
 
-    lines.append(f"📊 *P&L total: {pnl_sign}{_esc(f'{pnl_total:.1f}')} pts*")
+
+def notify_target_hit(event: dict) -> bool:
+    """Alerta: target alcanzado, trailing stop actualizado."""
+    idx = event["target_index"]
+    lines = [
+        f"🎯 *Target {idx + 1} alcanzado*",
+        "",
+        f"📍 {_esc(event['target_price'])} \\| ES: {_esc(event['price'])}",
+        f"🛑 Stop subido: {_esc(event['old_stop'])} → {_esc(event['new_stop'])}",
+    ]
+
+    return send_telegram("\n".join(lines))
+
+
+def notify_gate_approved(decision, level: float, price: float,
+                         stop_price: float, targets: list[float],
+                         alignment: str) -> bool:
+    """Alerta: Execution Gate aprueba ejecución."""
+    risk = abs(price - stop_price)
+    targets_str = ", ".join(_esc(str(t)) for t in targets)
+
+    lines = [
+        "✅ *Execution Gate — APROBADO*",
+        "",
+        f"📍 Nivel: {_esc(level)} \\| ES: {_esc(price)}",
+        f"🛑 Stop: {_esc(stop_price)} \\(\\-{_esc(f'{risk:.0f}')} pts\\)",
+        f"🎯 Targets: {targets_str}",
+        "",
+        f"🤖 {_esc(decision.reasoning)}",
+    ]
+
+    return send_telegram("\n".join(lines))
+
+
+def notify_trade_rejected(decision) -> bool:
+    """Alerta: trade descartado (trader dijo no o timeout)."""
+    if decision is None:
+        return False
+
+    factors = ", ".join(decision.risk_factors) if decision.risk_factors else "ninguno"
+
+    lines = [
+        "🚫 *Trade descartado*",
+        "",
+        f"🤖 {_esc(decision.reasoning)}",
+        f"🔍 Factores: {_esc(factors)}",
+    ]
 
     return send_telegram("\n".join(lines))
 
