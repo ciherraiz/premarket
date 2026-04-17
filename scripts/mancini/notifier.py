@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Importar utilidades del notifier existente
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from scripts.notify_telegram import send_telegram, _esc
+from scripts.notify_telegram import send_telegram, send_telegram_photo, _esc
 
 
 def notify_plan_loaded(plan: dict,
@@ -179,6 +179,28 @@ def notify_trade_rejected(decision) -> bool:
     ]
 
     return send_telegram("\n".join(lines))
+
+
+def notify_plan_chart(plan, es_price: float, detectors, trade=None) -> bool:
+    """Genera y envía gráfico del plan a Telegram."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from scripts.mancini.chart import generate_plan_chart
+
+    timestamp_et = datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M ET")
+    try:
+        png_bytes = generate_plan_chart(
+            plan=plan,
+            es_price=es_price,
+            detectors=detectors,
+            trade=trade,
+            timestamp_et=timestamp_et,
+        )
+    except Exception as e:
+        print(f"[notifier] Error generando chart: {e}")
+        return False
+
+    return send_telegram_photo(png_bytes, caption=f"📊 Plan Mancini | {plan.fecha}")
 
 
 def notify_weekly_plan(plan: dict) -> bool:

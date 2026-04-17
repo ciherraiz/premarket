@@ -354,6 +354,33 @@ def send_telegram(message: str) -> bool:
     return True
 
 
+TELEGRAM_PHOTO_API = "https://api.telegram.org/bot{token}/sendPhoto"
+
+
+def send_telegram_photo(photo_bytes: bytes, caption: str = "") -> bool:
+    """Envía imagen PNG a Telegram. Devuelve True si exitoso."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print(
+            "[notify] ERROR: TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configurados en .env",
+            file=sys.stderr,
+        )
+        return False
+
+    url = TELEGRAM_PHOTO_API.format(token=token)
+    files = {"photo": ("plan_chart.png", photo_bytes, "image/png")}
+    data: dict[str, str] = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption
+
+    resp = httpx.post(url, data=data, files=files, timeout=15)
+    if not resp.is_success:
+        print(f"[notify] ERROR Telegram photo {resp.status_code}: {resp.text}", file=sys.stderr)
+        return False
+    return True
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
