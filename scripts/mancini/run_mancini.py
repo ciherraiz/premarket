@@ -27,6 +27,37 @@ from zoneinfo import ZoneInfo
 # Asegurar que el proyecto raíz está en sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+# ── Logging dual: stdout + fichero ────────────────────────────────
+
+LOG_DIR = Path("logs")
+
+class _Tee:
+    """Escribe a stdout (visible en ventana cmd) y a un fichero de log."""
+
+    def __init__(self, log_path: Path):
+        self._stdout = sys.__stdout__
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self._file = log_path.open("a", encoding="utf-8")
+
+    def write(self, data: str) -> int:
+        self._stdout.write(data)
+        self._file.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        self._stdout.flush()
+        self._file.flush()
+
+    def close(self) -> None:
+        self._file.close()
+
+
+def _setup_dual_output(log_path: Path) -> None:
+    """Redirige stdout y stderr a consola + fichero."""
+    tee = _Tee(log_path)
+    sys.stdout = tee  # type: ignore[assignment]
+    sys.stderr = _Tee(log_path)  # type: ignore[assignment]
+
 from scripts.mancini.config import (
     load_plan, save_plan, save_weekly, load_intraday_state,
     PLAN_PATH, INTRADAY_STATE_PATH,
@@ -39,6 +70,8 @@ ET = ZoneInfo("America/New_York")
 
 def cmd_scan(args) -> None:
     """Obtiene tweets de Mancini y extrae/actualiza el plan diario."""
+    _setup_dual_output(LOG_DIR / "mancini_scan.log")
+
     from scripts.mancini.tweet_fetcher import fetch_tweets_sync
     from scripts.mancini.tweet_parser import parse_tweets_to_plan
     from scripts.mancini.logger import append_scan_result
@@ -110,6 +143,8 @@ def cmd_scan(args) -> None:
 
 def cmd_weekly_scan(args) -> None:
     """Obtiene Big Picture View del fin de semana."""
+    _setup_dual_output(LOG_DIR / "mancini_weekly.log")
+
     from scripts.mancini.tweet_fetcher import fetch_mancini_weekend_tweets
     from scripts.mancini.tweet_parser import parse_weekly_tweets
     from scripts.mancini import notifier
@@ -160,6 +195,8 @@ def cmd_weekly_scan(args) -> None:
 def cmd_monitor(args) -> None:
     """Arranca el monitor de precio /ES."""
     import os
+    _setup_dual_output(LOG_DIR / "mancini_monitor.log")
+
     from scripts.tastytrade_client import TastyTradeClient
 
     client = TastyTradeClient()

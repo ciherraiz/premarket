@@ -32,10 +32,16 @@ Los subcomandos disponibles son:
 ### Wrapper: batch files
 
 Cada tarea de Task Scheduler ejecuta un `.bat` en `scripts/mancini/` que:
-1. Hace `cd` al directorio del proyecto
-2. Añade `uv` al PATH
-3. Ejecuta el subcomando correspondiente
-4. Redirige output a `logs/mancini_scheduler.log`
+1. Pone `title` en la ventana cmd (ej. "Mancini Monitor /ES")
+2. Hace `cd` al directorio del proyecto
+3. Añade `uv` al PATH
+4. Ejecuta el subcomando correspondiente (sin redirección `>>`)
+
+El output va a **consola** (ventana cmd visible) y a **fichero de log**
+simultáneamente, gestionado por `_Tee` en `run_mancini.py`. Cada tarea
+escribe a su propio fichero para evitar contención de file handles en Windows:
+monitor → `logs/mancini_monitor.log`, scan → `logs/mancini_scan.log`,
+weekly → `logs/mancini_weekly.log`.
 
 ---
 
@@ -210,8 +216,10 @@ pero no se ejecutan. No hay API de borrado, solo desactivación.
 | `scripts/mancini/monitor_start.bat` | Wrapper para Task Scheduler (monitor L-V) |
 | `scripts/mancini/scan_sunday.bat` | Wrapper para Task Scheduler (scan dom) |
 | `scripts/mancini/monitor_sunday.bat` | Wrapper para Task Scheduler (monitor dom) |
-| `logs/mancini_scheduler.log` | Output de todas las ejecuciones |
-| `logs/mancini_scans.jsonl` | Registro de cada scan (éxito/fallo) |
+| `logs/mancini_monitor.log` | Output del monitor (polling, detectores, trades) |
+| `logs/mancini_scan.log` | Output de los scans diarios (tweets, plan) |
+| `logs/mancini_weekly.log` | Output de los scans semanales |
+| `logs/mancini_scans.jsonl` | Registro estructurado de cada scan (éxito/fallo) |
 
 ---
 
@@ -219,12 +227,11 @@ pero no se ejecutan. No hay API de borrado, solo desactivación.
 
 ### Listar tareas registradas
 
-```cmd
-schtasks /query /tn "ManciniScan"
-schtasks /query /tn "ManciniMonitor"
-schtasks /query /tn "ManciniScanDomingo"
-schtasks /query /tn "ManciniMonitorDomingo"
-schtasks /query /tn "ManciniWeeklyScan"
+**Usar PowerShell** (schtasks desde bash/git-bash no encuentra tareas en `\`):
+
+```powershell
+Get-ScheduledTask | Where-Object { $_.TaskName -like '*Mancini*' } | Select-Object TaskName, State
+Get-ScheduledTask -TaskName 'ManciniScan' | Get-ScheduledTaskInfo
 ```
 
 ### Ejecutar manualmente
