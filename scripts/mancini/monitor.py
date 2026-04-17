@@ -83,6 +83,7 @@ class ManciniMonitor:
         self.detectors: list[FailedBreakdownDetector] = []
         self.trade_manager = TradeManager()
         self.intraday_state = IntraDayState()
+        self.price_history: list[tuple[str, float]] = []
         self._plan_mtime: float = 0
 
     def load_state(self) -> None:
@@ -252,7 +253,8 @@ class ManciniMonitor:
             # Chart inicial del plan
             price = self.poll_es()
             if price:
-                notifier.notify_plan_chart(self.plan, price, self.detectors)
+                notifier.notify_plan_chart(self.plan, price, self.detectors,
+                                          price_history=self.price_history)
 
             return True
 
@@ -282,6 +284,10 @@ class ManciniMonitor:
         """
         ts = timestamp or datetime.now(timezone.utc).isoformat()
         events = []
+
+        # Acumular historial de precios para el chart
+        time_et = _now_et().strftime("%H:%M")
+        self.price_history.append((time_et, price))
 
         # 1. Alimentar detectores
         for detector in self.detectors:
@@ -315,6 +321,7 @@ class ManciniMonitor:
             notifier.notify_plan_chart(
                 self.plan, price, self.detectors,
                 self.trade_manager.active_trade(),
+                price_history=self.price_history,
             )
 
         elif t.to_state == State.SIGNAL:
@@ -370,6 +377,7 @@ class ManciniMonitor:
                 )
                 notifier.notify_plan_chart(
                     self.plan, price, self.detectors, trade,
+                    price_history=self.price_history,
                 )
                 _log(f"Trade abierto: {direction} {trade.entry_price} stop={trade.stop_price} [{alignment}]")
             else:
@@ -403,6 +411,7 @@ class ManciniMonitor:
             notifier.notify_plan_chart(
                 self.plan, event["price"], self.detectors,
                 self._find_trade(event["trade_id"]),
+                price_history=self.price_history,
             )
 
         elif event["type"] == "TRADE_CLOSED":
@@ -595,6 +604,7 @@ class ManciniMonitor:
                         notifier.notify_plan_chart(
                             self.plan, price, self.detectors,
                             self.trade_manager.active_trade(),
+                            price_history=self.price_history,
                         )
 
         self.intraday_state.last_check = datetime.now(timezone.utc).isoformat()
