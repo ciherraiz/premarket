@@ -92,9 +92,24 @@ def cmd_scan(args) -> None:
         append_scan_result("no_tweets", 0, False, "No tweets found", today)
         sys.exit(0)
 
+    # Excluir tweets que el clasificador intraday ya procesó
+    # (evita que el scan re-extraiga targets que el clasificador decidió no aplicar)
+    intraday_state = load_intraday_state()
+    if intraday_state.processed_tweet_ids:
+        before = len(tweets)
+        tweets = [t for t in tweets if t["id"] not in intraday_state.processed_tweet_ids]
+        skipped = before - len(tweets)
+        if skipped:
+            print(f"Excluidos {skipped} tweets ya procesados por clasificador intraday")
+
     print(f"Encontrados {len(tweets)} tweets de hoy")
     for i, t in enumerate(tweets, 1):
         print(f"  {i}. {t['text'][:100]}...")
+
+    if not tweets:
+        print("Todos los tweets ya fueron procesados por el clasificador intraday")
+        append_scan_result("no_new_tweets", 0, False, "All processed by classifier", today)
+        sys.exit(0)
 
     # Parsear con Haiku
     try:
