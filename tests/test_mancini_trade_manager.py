@@ -1,4 +1,7 @@
-"""Tests para scripts/mancini/trade_manager.py — Gestión de trades Mancini."""
+"""Tests para scripts/mancini/trade_manager.py — Gestión de trades Mancini.
+
+Actualizados para trailing stop con 1 contrato (sin salida parcial).
+"""
 
 import os
 import sys
@@ -62,6 +65,7 @@ def test_open_trade_basic():
     assert trade.status == TradeStatus.OPEN
     assert trade.stop_price == 6774 - STOP_BUFFER_PTS
     assert trade.targets == [6793, 6809]
+    assert trade.targets_hit == 0
     assert tm.trades_today() == 1
 
 
@@ -91,7 +95,7 @@ def test_cannot_open_while_active():
     assert t2 is None
 
 
-# ── LONG trade lifecycle ────────────────────────────────────────────
+# ── LONG trailing stop lifecycle ────────────────────────────────────
 
 def test_long_stop_hit():
     """LONG: precio cae al stop → trade cerrado."""
@@ -106,56 +110,75 @@ def test_long_stop_hit():
     assert tm.active_trade() is None
 
 
-def test_long_target1_partial():
-    """LONG: precio alcanza Target 1 → parcial 50%, stop a breakeven."""
+def test_long_t1_hit_stop_to_breakeven():
+    """LONG: T1 alcanzado → stop sube a breakeven (entry_price)."""
     tm = TradeManager(fecha="2026-04-10")
     tm.open_trade("LONG", 6783, breakdown_low=6774,
                   targets=[6793, 6809], timestamp=TS)
 
     events = tm.process_tick(6793, timestamp=TS2)
     assert len(events) == 1
-    assert events[0]["type"] == "PARTIAL_EXIT"
-    assert events[0]["pnl_partial_pts"] == 10  # 6793 - 6783
+    assert events[0]["type"] == "TARGET_HIT"
+    assert events[0]["target_index"] == 0
+    assert events[0]["new_stop"] == 6783  # breakeven
 
     trade = tm.active_trade()
-    assert trade.status == TradeStatus.PARTIAL
-    assert trade.runner_stop == 6783  # breakeven
+    assert trade.status == TradeStatus.OPEN  # NO cambia a PARTIAL
+    assert trade.stop_price == 6783
+    assert trade.targets_hit == 1
 
 
-def test_long_target2_after_partial():
-    """LONG: tras parcial, precio alcanza Target 2 → cerrado."""
+def test_long_t2_hit_stop_to_t1():
+    """LONG: T2 alcanzado → stop sube a T1."""
+    tm = TradeManager(fecha="2026-04-10")
+    tm.open_trade("LONG", 6783, breakdown_low=6774,
+                  targets=[6793, 6809, 6830], timestamp=TS)
+
+    tm.process_tick(6793, timestamp=TS2)  # T1 → breakeven
+    events = tm.process_tick(6809, timestamp=TS3)  # T2
+
+    assert len(events) == 1
+    assert events[0]["type"] == "TARGET_HIT"
+    assert events[0]["target_index"] == 1
+    assert events[0]["new_stop"] == 6793  # T1
+
+    trade = tm.active_trade()
+    assert trade.stop_price == 6793
+    assert trade.targets_hit == 2
+
+
+def test_long_t3_hit_stop_to_t2():
+    """LONG: T3 alcanzado → stop sube a T2."""
+    tm = TradeManager(fecha="2026-04-10")
+    tm.open_trade("LONG", 6783, breakdown_low=6774,
+                  targets=[6793, 6809, 6830], timestamp=TS)
+
+    tm.process_tick(6793, timestamp=TS2)  # T1
+    tm.process_tick(6809, timestamp=TS3)  # T2
+    events = tm.process_tick(6830, timestamp=TS4)  # T3
+
+    assert len(events) == 1
+    assert events[0]["target_index"] == 2
+    assert events[0]["new_stop"] == 6809  # T2
+
+    trade = tm.active_trade()
+    assert trade.stop_price == 6809
+    assert trade.targets_hit == 3
+
+
+def test_long_stop_after_t1_breakeven():
+    """LONG: tras T1, precio cae a breakeven → cerrado con P&L 0."""
     tm = TradeManager(fecha="2026-04-10")
     tm.open_trade("LONG", 6783, breakdown_low=6774,
                   targets=[6793, 6809], timestamp=TS)
 
-    tm.process_tick(6793, timestamp=TS2)  # parcial
-    events = tm.process_tick(6809, timestamp=TS3)
+    tm.process_tick(6793, timestamp=TS2)  # T1 → stop a 6783
+    events = tm.process_tick(6783, timestamp=TS3)  # toca stop
+
     assert len(events) == 1
     assert events[0]["type"] == "TRADE_CLOSED"
-    assert events[0]["reason"] == ExitReason.TARGET_2
-
-    trade = tm.trades[0]
-    assert trade.pnl_partial_pts == 10
-    assert trade.pnl_runner_pts == 26  # 6809 - 6783
-    assert trade.pnl_total_pts == 18  # (10 + 26) / 2
-
-
-def test_long_runner_stop_after_partial():
-    """LONG: tras parcial, precio cae a breakeven → runner_stop."""
-    tm = TradeManager(fecha="2026-04-10")
-    tm.open_trade("LONG", 6783, breakdown_low=6774,
-                  targets=[6793, 6809], timestamp=TS)
-
-    tm.process_tick(6793, timestamp=TS2)  # parcial
-    events = tm.process_tick(6783, timestamp=TS3)  # cae a breakeven
-    assert len(events) == 1
-    assert events[0]["type"] == "TRADE_CLOSED"
-    assert events[0]["reason"] == ExitReason.RUNNER_STOP
-
-    trade = tm.trades[0]
-    assert trade.pnl_partial_pts == 10
-    assert trade.pnl_runner_pts == 0  # breakeven
-    assert trade.pnl_total_pts == 5  # (10 + 0) / 2
+    assert events[0]["reason"] == ExitReason.STOP
+    assert events[0]["pnl_total_pts"] == 0  # breakeven
 
 
 def test_long_no_event_between_levels():
@@ -169,7 +192,24 @@ def test_long_no_event_between_levels():
     assert tm.active_trade().status == TradeStatus.OPEN
 
 
-# ── SHORT trade lifecycle ───────────────────────────────────────────
+def test_long_single_target_no_partial():
+    """LONG: con 1 solo target, T1 → stop a breakeven, NO cierra."""
+    tm = TradeManager(fecha="2026-04-10")
+    tm.open_trade("LONG", 6783, breakdown_low=6774,
+                  targets=[6793], timestamp=TS)
+
+    events = tm.process_tick(6793, timestamp=TS2)
+    assert len(events) == 1
+    assert events[0]["type"] == "TARGET_HIT"
+
+    # Trade sigue abierto con stop a breakeven
+    trade = tm.active_trade()
+    assert trade is not None
+    assert trade.stop_price == 6783
+    assert trade.targets_hit == 1
+
+
+# ── SHORT trailing stop lifecycle ───────────────────────────────────
 
 def test_short_stop_hit():
     """SHORT: precio sube al stop → cerrado."""
@@ -182,42 +222,39 @@ def test_short_stop_hit():
     assert events[0]["reason"] == ExitReason.STOP
 
 
-def test_short_target1_partial():
-    """SHORT: precio baja a Target 1 → parcial."""
+def test_short_t1_stop_to_breakeven():
+    """SHORT: T1 alcanzado → stop baja a breakeven."""
     tm = TradeManager(fecha="2026-04-10")
     tm.open_trade("SHORT", 6809, breakdown_low=6818,
                   targets=[6800, 6790], timestamp=TS)
 
     events = tm.process_tick(6800, timestamp=TS2)
     assert len(events) == 1
-    assert events[0]["type"] == "PARTIAL_EXIT"
-    assert events[0]["pnl_partial_pts"] == 9  # 6809 - 6800
+    assert events[0]["type"] == "TARGET_HIT"
+    assert events[0]["new_stop"] == 6809  # breakeven
 
     trade = tm.active_trade()
-    assert trade.runner_stop == 6809  # breakeven
+    assert trade.stop_price == 6809
+    assert trade.targets_hit == 1
 
 
-def test_short_target2_after_partial():
-    """SHORT: tras parcial, Target 2 → cerrado."""
+def test_short_t2_stop_to_t1():
+    """SHORT: T2 alcanzado → stop baja a T1."""
     tm = TradeManager(fecha="2026-04-10")
     tm.open_trade("SHORT", 6809, breakdown_low=6818,
                   targets=[6800, 6790], timestamp=TS)
 
-    tm.process_tick(6800, timestamp=TS2)
-    events = tm.process_tick(6790, timestamp=TS3)
-    assert len(events) == 1
-    assert events[0]["reason"] == ExitReason.TARGET_2
+    tm.process_tick(6800, timestamp=TS2)  # T1
+    events = tm.process_tick(6790, timestamp=TS3)  # T2
 
-    trade = tm.trades[0]
-    assert trade.pnl_partial_pts == 9
-    assert trade.pnl_runner_pts == 19  # 6809 - 6790
-    assert trade.pnl_total_pts == 14  # (9 + 19) / 2
+    assert events[0]["new_stop"] == 6800  # T1
+    assert tm.active_trade().targets_hit == 2
 
 
-# ── EOD close ───────────────────────────────────────────────────────
+# ── EOD / Manual close ─────────────────────────────────────────────
 
 def test_close_eod_open_trade():
-    """Cierre por fin de jornada con trade abierto."""
+    """Cierre EOD (manual) con trade abierto."""
     tm = TradeManager(fecha="2026-04-10")
     tm.open_trade("LONG", 6783, breakdown_low=6774,
                   targets=[6793], timestamp=TS)
@@ -228,21 +265,18 @@ def test_close_eod_open_trade():
     assert event["pnl_total_pts"] == 5  # 6788 - 6783
 
 
-def test_close_eod_partial_trade():
-    """Cierre EOD con trade en estado PARTIAL."""
+def test_close_manual_active_trade():
+    """Cierre manual via Telegram."""
     tm = TradeManager(fecha="2026-04-10")
     tm.open_trade("LONG", 6783, breakdown_low=6774,
                   targets=[6793, 6809], timestamp=TS)
 
-    tm.process_tick(6793, timestamp=TS2)  # parcial
-    event = tm.close_eod(6800, timestamp=TS3)
-    assert event is not None
-    assert event["reason"] == ExitReason.EOD
+    tm.process_tick(6793, timestamp=TS2)  # T1
 
-    trade = tm.trades[0]
-    assert trade.pnl_partial_pts == 10
-    assert trade.pnl_runner_pts == 17  # 6800 - 6783
-    assert trade.pnl_total_pts == 13.5  # (10 + 17) / 2
+    event = tm.close_manual(6800, timestamp=TS3)
+    assert event is not None
+    assert event["reason"] == ExitReason.MANUAL
+    assert event["pnl_total_pts"] == 17  # 6800 - 6783
 
 
 def test_close_eod_no_active():
@@ -253,8 +287,8 @@ def test_close_eod_no_active():
 
 # ── Full lifecycle ──────────────────────────────────────────────────
 
-def test_full_lifecycle_long_success():
-    """Ciclo completo: open → partial T1 → close T2."""
+def test_full_lifecycle_trailing_stop():
+    """Ciclo completo: open → T1 (breakeven) → T2 (stop a T1) → stop hit."""
     tm = TradeManager(fecha="2026-04-10")
     trade = tm.open_trade("LONG", 6783, breakdown_low=6774,
                           targets=[6793, 6809], timestamp=TS)
@@ -263,18 +297,24 @@ def test_full_lifecycle_long_success():
     # Tick: sin evento
     assert tm.process_tick(6785, timestamp=TS) == []
 
-    # Target 1
+    # Target 1 → stop a breakeven
     events = tm.process_tick(6795, timestamp=TS2)
-    assert events[0]["type"] == "PARTIAL_EXIT"
+    assert events[0]["type"] == "TARGET_HIT"
+    assert events[0]["new_stop"] == 6783
 
     # Tick intermedio: sin evento
     assert tm.process_tick(6800, timestamp=TS3) == []
 
-    # Target 2
+    # Target 2 → stop a T1
     events = tm.process_tick(6810, timestamp=TS4)
+    assert events[0]["type"] == "TARGET_HIT"
+    assert events[0]["new_stop"] == 6793  # T1
+
+    # Stop hit a T1
+    events = tm.process_tick(6793, timestamp="2026-04-10T14:20:00Z")
     assert events[0]["type"] == "TRADE_CLOSED"
-    assert events[0]["reason"] == ExitReason.TARGET_2
-    assert tm.active_trade() is None
+    assert events[0]["reason"] == ExitReason.STOP
+    assert events[0]["pnl_total_pts"] == 10  # 6793 - 6783
 
 
 def test_full_lifecycle_long_stopped_out():
@@ -300,15 +340,39 @@ def test_multiple_trades_in_day():
                   targets=[6793], timestamp=TS)
     tm.process_tick(6770, timestamp=TS2)
 
-    # Trade 2: target hit (single target → cierra completo)
+    # Trade 2: T1 hit → runner with breakeven stop → stop hit at breakeven
     tm.open_trade("LONG", 6790, breakdown_low=6782,
                   targets=[6800], timestamp=TS3)
     events = tm.process_tick(6800, timestamp=TS4)
+    assert events[0]["type"] == "TARGET_HIT"
+
+    # Runner con stop a breakeven → toca stop
+    events = tm.process_tick(6790, timestamp="2026-04-10T14:20:00Z")
     assert events[0]["type"] == "TRADE_CLOSED"
-    assert events[0]["reason"] == ExitReason.TARGET_1
 
     assert tm.trades_today() == 2
     assert all(t.status == TradeStatus.CLOSED for t in tm.trades)
+
+
+# ── targets_hit counter ────────────────────────────────────────────
+
+def test_targets_hit_counter():
+    """targets_hit incrementa correctamente con cada target."""
+    tm = TradeManager(fecha="2026-04-10")
+    tm.open_trade("LONG", 6780, breakdown_low=6770,
+                  targets=[6790, 6800, 6810], timestamp=TS)
+
+    trade = tm.active_trade()
+    assert trade.targets_hit == 0
+
+    tm.process_tick(6790, timestamp=TS2)
+    assert trade.targets_hit == 1
+
+    tm.process_tick(6800, timestamp=TS3)
+    assert trade.targets_hit == 2
+
+    tm.process_tick(6810, timestamp=TS4)
+    assert trade.targets_hit == 3
 
 
 # ── Serialización ───────────────────────────────────────────────────
@@ -321,17 +385,19 @@ def test_trade_to_dict_roundtrip():
         entry_time=TS,
         stop_price=6772,
         targets=[6793, 6809],
-        status=TradeStatus.PARTIAL,
-        partial_exit_price=6793,
-        partial_exit_time=TS2,
-        runner_stop=6783,
-        pnl_partial_pts=10,
+        status=TradeStatus.OPEN,
+        targets_hit=1,
+        entry_order_id="order-abc",
+        stop_order_id="order-def",
+        gate_decision={"execute": True, "reasoning": "ok", "risk_factors": []},
+        execution_mode="auto",
     )
     d = trade.to_dict()
     restored = Trade.from_dict(d)
     assert restored.id == "test-123"
-    assert restored.partial_exit_price == 6793
-    assert restored.runner_stop == 6783
+    assert restored.targets_hit == 1
+    assert restored.entry_order_id == "order-abc"
+    assert restored.gate_decision["execute"] is True
 
 
 def test_trade_manager_to_dict_roundtrip():

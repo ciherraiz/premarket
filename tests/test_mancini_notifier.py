@@ -96,36 +96,52 @@ def test_notify_signal(mock_telegram):
     assert "6793" in msg
 
 
-def test_notify_partial_exit(mock_telegram):
-    result = notifier.notify_partial_exit(6793, 10, 6783)
+def test_notify_target_hit(mock_telegram):
+    result = notifier.notify_target_hit({
+        "target_index": 0, "target_price": 6793,
+        "price": 6794, "new_stop": 6783, "old_stop": 6772,
+    })
     assert result is True
     msg = mock_telegram.call_args[0][0]
     assert "Target 1" in msg
-    assert "10" in msg
-    assert "breakeven" in msg
+    assert "6793" in msg
+    assert "6783" in msg
 
 
 def test_notify_trade_closed(mock_telegram):
-    result = notifier.notify_trade_closed(
-        reason="TARGET_2", entry=6783, exit_price=6809,
-        pnl_total=18.0, pnl_partial=10, pnl_runner=26,
-    )
-    assert result is True
-    msg = mock_telegram.call_args[0][0]
-    assert "Trade cerrado" in msg
-    assert "TARGET" in msg
-    assert "18" in msg
-
-
-def test_notify_trade_closed_stop(mock_telegram):
     result = notifier.notify_trade_closed(
         reason="STOP", entry=6783, exit_price=6771,
         pnl_total=-12.0,
     )
     assert result is True
     msg = mock_telegram.call_args[0][0]
+    assert "Trade cerrado" in msg
     assert "STOP" in msg
     assert "12" in msg
+
+
+def test_notify_gate_approved(mock_telegram):
+    from scripts.mancini.execution_gate import GateDecision
+    decision = GateDecision(execute=True, reasoning="Condiciones favorables")
+    result = notifier.notify_gate_approved(decision, 6781, 6785, 6772, [6793], "ALIGNED")
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "APROBADO" in msg
+    assert "6781" in msg
+
+
+def test_notify_trade_rejected(mock_telegram):
+    from scripts.mancini.execution_gate import GateDecision
+    decision = GateDecision(execute=False, reasoning="Riesgo alto", risk_factors=["riesgo"])
+    result = notifier.notify_trade_rejected(decision)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "descartado" in msg
+
+
+def test_notify_trade_rejected_none(mock_telegram):
+    result = notifier.notify_trade_rejected(None)
+    assert result is False
 
 
 def test_notify_session_summary(mock_telegram):

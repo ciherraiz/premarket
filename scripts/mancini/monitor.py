@@ -34,8 +34,8 @@ from scripts.mancini.detector import (
     load_detectors,
     STATE_PATH,
 )
-from scripts.mancini.trade_manager import TradeManager, TradeStatus
-from scripts.mancini.logger import append_trade, append_adjustment
+from scripts.mancini.trade_manager import TradeManager, TradeStatus, calc_stop
+from scripts.mancini.logger import append_trade, append_adjustment, append_gate_decision
 from scripts.mancini import notifier
 
 ET = ZoneInfo("America/New_York")
@@ -63,7 +63,10 @@ class ManciniMonitor:
                  weekly_path: Path = WEEKLY_PLAN_PATH,
                  intraday_path: Path = INTRADAY_STATE_PATH,
                  session_start: int = SESSION_START_HOUR,
-                 session_end: int = SESSION_END_HOUR):
+                 session_end: int = SESSION_END_HOUR,
+                 order_executor=None,
+                 gate_enabled: bool = True,
+                 es_symbol: str = ""):
         self.client = client
         self.poll_interval = poll_interval
         self.plan_path = plan_path
@@ -72,6 +75,9 @@ class ManciniMonitor:
         self.intraday_path = intraday_path
         self.session_start = session_start
         self.session_end = session_end
+        self.order_executor = order_executor  # None = sin órdenes TastyTrade
+        self.gate_enabled = gate_enabled  # False = ejecutar sin consultar LLM
+        self.es_symbol = es_symbol  # símbolo /ES resuelto, ej. "/ESM6:XCME"
         self.plan: DailyPlan | None = None
         self.weekly: DailyPlan | None = None
         self.detectors: list[FailedBreakdownDetector] = []
@@ -248,10 +254,21 @@ class ManciniMonitor:
             direction = "LONG"
             alignment = self.calc_alignment(direction)
             targets = self._get_targets_for_level(t.level, alignment)
-            runner_mode = alignment != "MISALIGNED"
 
             if alignment == "MISALIGNED":
                 _log(f"⚠️ Trade MISALIGNED (contra sesgo semanal) — solo T1")
+
+            # ── Execution Gate ──
+            stop_price = calc_stop(direction, price, breakdown_low)
+            should_execute, gate_decision = self._evaluate_gate(
+                price, t.level, breakdown_low, direction,
+                stop_price, targets, alignment, ts,
+            )
+
+            if not should_execute:
+                _log(f"Trade descartado por gate/trader")
+                notifier.notify_trade_rejected(gate_decision)
+                return event
 
             # Proponer trade
             trade = self.trade_manager.open_trade(
@@ -260,14 +277,21 @@ class ManciniMonitor:
                 breakdown_low=breakdown_low,
                 targets=targets,
                 timestamp=ts,
-                runner_mode=runner_mode,
                 alignment=alignment,
             )
             if trade:
+                # Guardar decisión del gate en el trade
+                if gate_decision:
+                    trade.gate_decision = gate_decision.to_dict()
+                    trade.execution_mode = "auto" if gate_decision.execute else "manual_confirm"
+
                 # Marcar detector como activo
                 for d in self.detectors:
                     if d.level == t.level and d.state == State.SIGNAL:
                         d.mark_active()
+
+                # ── Lanzar orden en TastyTrade ──
+                self._place_trade_orders(trade, direction)
 
                 notifier.notify_signal(
                     level=t.level, price=price, entry=trade.entry_price,
@@ -286,11 +310,25 @@ class ManciniMonitor:
 
     def _handle_trade_event(self, event: dict) -> None:
         """Maneja un evento del trade manager."""
-        if event["type"] == "PARTIAL_EXIT":
-            _log(f"Target 1 alcanzado: +{event['pnl_partial_pts']:.0f} pts, stop→breakeven")
-            notifier.notify_partial_exit(
-                event["price"], event["pnl_partial_pts"], event["runner_stop"]
+        if event["type"] == "TARGET_HIT":
+            idx = event["target_index"]
+            _log(
+                f"Target {idx + 1} alcanzado: {event['target_price']}, "
+                f"stop {event['old_stop']} → {event['new_stop']}"
             )
+            # Sincronizar trailing stop con TastyTrade
+            trade = self._find_trade(event["trade_id"])
+            if trade and self.order_executor and trade.stop_order_id:
+                result = self.order_executor.update_stop(
+                    trade.stop_order_id, event["new_stop"]
+                )
+                if result.success:
+                    _log(f"Stop actualizado en TastyTrade: {event['new_stop']}")
+                else:
+                    _log(f"Error actualizando stop en TastyTrade: {result.error}")
+
+            notifier.notify_target_hit(event)
+
         elif event["type"] == "TRADE_CLOSED":
             _log(f"Trade cerrado ({event['reason']}): P&L={event['pnl_total_pts']:+.1f} pts")
             # Marcar detector como DONE
@@ -299,18 +337,15 @@ class ManciniMonitor:
                     d.mark_done()
 
             # Buscar el trade y loggearlo
-            for t in self.trade_manager.trades:
-                if t.id == event["trade_id"]:
-                    append_trade(t)
-                    notifier.notify_trade_closed(
-                        reason=event["reason"],
-                        entry=t.entry_price,
-                        exit_price=event["price"],
-                        pnl_total=event["pnl_total_pts"],
-                        pnl_partial=t.pnl_partial_pts,
-                        pnl_runner=t.pnl_runner_pts,
-                    )
-                    break
+            trade = self._find_trade(event["trade_id"])
+            if trade:
+                append_trade(trade)
+                notifier.notify_trade_closed(
+                    reason=event["reason"],
+                    entry=trade.entry_price,
+                    exit_price=event["price"],
+                    pnl_total=event["pnl_total_pts"],
+                )
 
     def _get_targets_for_level(self, level: float,
                                alignment: str = "NEUTRAL") -> list[float]:
@@ -335,6 +370,101 @@ class ManciniMonitor:
                     break  # Solo añadir el siguiente target semanal
 
         return sorted(targets)
+
+    def _find_trade(self, trade_id: str):
+        """Busca un trade por ID."""
+        for t in self.trade_manager.trades:
+            if t.id == trade_id:
+                return t
+        return None
+
+    def _evaluate_gate(
+        self, price: float, level: float, breakdown_low: float,
+        direction: str, stop_price: float, targets: list[float],
+        alignment: str, ts: str,
+    ) -> tuple[bool, "GateDecision | None"]:
+        """Evalúa el Execution Gate. Retorna (should_execute, decision)."""
+        if not self.gate_enabled:
+            return True, None
+
+        from scripts.mancini.execution_gate import evaluate_signal, GateDecision
+        from scripts.mancini.telegram_confirm import ask_trader_confirmation
+
+        try:
+            decision = evaluate_signal(
+                signal_price=price,
+                signal_level=level,
+                breakdown_low=breakdown_low,
+                direction=direction,
+                stop_price=stop_price,
+                targets=targets,
+                plan_notes=self.plan.notes if self.plan else "",
+                alignment=alignment,
+                trades_today=self.trade_manager.trades,
+                recent_adjustments=self.intraday_state.adjustments,
+                current_time_et=_now_et(),
+                session_end_hour=self.session_end,
+            )
+        except Exception as e:
+            _log(f"Error en Execution Gate: {e} — ejecutando sin gate")
+            return True, None
+
+        append_gate_decision(decision, level, price)
+
+        if decision.execute:
+            _log(f"Gate APRUEBA: {decision.reasoning}")
+            notifier.notify_gate_approved(decision, level, price, stop_price, targets, alignment)
+            return True, decision
+
+        # Gate dice no → preguntar al trader via Telegram
+        _log(f"Gate RECHAZA: {decision.reasoning}")
+        risk = abs(price - stop_price)
+        signal_info = (
+            f"📍 Nivel: {level} | ES: {price}\n"
+            f"📉 Breakdown low: {breakdown_low}\n"
+            f"🛑 Stop: {stop_price} (-{risk:.0f} pts)\n"
+            f"🎯 Targets: {targets}\n"
+            f"📊 Alignment: {alignment}"
+        )
+
+        try:
+            trader_says_yes = ask_trader_confirmation(
+                signal_info=signal_info,
+                risk_factors=decision.risk_factors,
+                reasoning=decision.reasoning,
+                timeout_seconds=120,
+            )
+        except Exception as e:
+            _log(f"Error en confirmación Telegram: {e} — descartando trade")
+            return False, decision
+
+        if trader_says_yes:
+            _log("Trader confirma ejecución manual")
+            return True, decision
+        else:
+            reason = "timeout" if trader_says_yes is None else "trader dijo no"
+            _log(f"Trade descartado: {reason}")
+            return False, decision
+
+    def _place_trade_orders(self, trade, direction: str) -> None:
+        """Lanza órdenes entry + stop en TastyTrade si hay executor."""
+        if not self.order_executor or not self.es_symbol:
+            return
+
+        entry_result = self.order_executor.place_entry(direction, self.es_symbol)
+        if entry_result.success:
+            trade.entry_order_id = entry_result.order_id
+            stop_result = self.order_executor.place_stop(
+                direction, self.es_symbol, trade.stop_price
+            )
+            if stop_result.success:
+                trade.stop_order_id = stop_result.order_id
+            else:
+                _log(f"Error lanzando stop: {stop_result.error}")
+            mode = "dry-run" if entry_result.dry_run else "LIVE"
+            _log(f"Orden {mode}: entry OK, stop {'OK' if stop_result.success else 'FAIL'}")
+        else:
+            _log(f"Error lanzando orden entry: {entry_result.error}")
 
     # ── Intraday tweet updates ─────────────────────────────────────
 
@@ -471,18 +601,17 @@ class ManciniMonitor:
         return None
 
     def close_session(self) -> None:
-        """Cierra la sesión: EOD trades activos, envía resumen."""
-        now = _now_et()
-        ts = datetime.now(timezone.utc).isoformat()
+        """Cierra la sesión: expira detectores, NO cierra trades activos.
 
-        # Cerrar trades activos
+        Los runners sobreviven overnight. El trade activo se persiste
+        en estado y se retoma al reiniciar el monitor al día siguiente.
+        """
+        now = _now_et()
+
+        # NO cerrar trades activos — runners overnight
         trade = self.trade_manager.active_trade()
         if trade:
-            price = self.poll_es()
-            if price:
-                event = self.trade_manager.close_eod(price, ts)
-                if event:
-                    self._handle_trade_event(event)
+            _log(f"Runner activo persiste overnight: entry={trade.entry_price} stop={trade.stop_price} targets_hit={trade.targets_hit}")
 
         # Expirar detectores activos
         for d in self.detectors:

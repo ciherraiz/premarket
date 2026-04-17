@@ -93,6 +93,29 @@ class TastyTradeClient:
 
         return result
 
+    def get_front_month_symbol(self, product_code: str) -> str | None:
+        """
+        Resuelve el símbolo del contrato front-month activo.
+
+        Args:
+            product_code: código del producto, ej. 'ES'
+
+        Returns:
+            Símbolo streamer del front-month, ej. '/ESM6:XCME', o None.
+        """
+        try:
+            futures = asyncio.run(Future.get(self.session, product_codes=[product_code]))
+            if not futures:
+                return None
+            front = next((f for f in futures if f.active and f.active_month), None)
+            if front is None:
+                front = next((f for f in futures if f.active), None)
+            if front is None:
+                return None
+            return front.streamer_symbol
+        except Exception:
+            return None
+
     def get_option_chain(
         self,
         symbol: str,

@@ -194,6 +194,7 @@ def cmd_weekly_scan(args) -> None:
 
 def cmd_monitor(args) -> None:
     """Arranca el monitor de precio /ES."""
+    import os
     _setup_dual_output(LOG_DIR / "mancini_monitor.log")
 
     from scripts.tastytrade_client import TastyTradeClient
@@ -204,6 +205,46 @@ def cmd_monitor(args) -> None:
         kwargs["session_start"] = args.start
     if args.end is not None:
         kwargs["session_end"] = args.end
+
+    # Execution Gate
+    kwargs["gate_enabled"] = not args.no_gate
+
+    # OrderExecutor (TastyTrade)
+    if not args.no_orders:
+        dry_run_env = os.getenv("MANCINI_DRY_RUN", "true").lower()
+        dry_run = dry_run_env in ("true", "1", "yes")
+        if args.live:
+            dry_run = False
+        contracts = int(os.getenv("MANCINI_CONTRACTS", "1"))
+
+        try:
+            from tastytrade import Account
+            from scripts.mancini.order_executor import OrderExecutor
+
+            accounts = Account.get_accounts(client.session)
+            if accounts:
+                account = accounts[0]
+                executor = OrderExecutor(
+                    session=client.session,
+                    account=account,
+                    dry_run=dry_run,
+                    contracts=contracts,
+                )
+                kwargs["order_executor"] = executor
+
+                # Resolver símbolo /ES front-month
+                es_symbol = client.get_front_month_symbol("ES")
+                if es_symbol:
+                    kwargs["es_symbol"] = es_symbol
+                    print(f"OrderExecutor: {'DRY-RUN' if dry_run else 'LIVE'} | {contracts} contrato(s) | {es_symbol}")
+                else:
+                    print("⚠️ No se pudo resolver /ES front-month, sin órdenes")
+                    kwargs.pop("order_executor", None)
+            else:
+                print("⚠️ No se encontraron cuentas TastyTrade, sin órdenes")
+        except Exception as e:
+            print(f"⚠️ Error inicializando OrderExecutor: {e}, sin órdenes")
+
     monitor = ManciniMonitor(**kwargs)
     monitor.run()
 
@@ -322,6 +363,12 @@ def main() -> None:
                            help="Hora inicio sesión ET (default: 7)")
     p_monitor.add_argument("--end", type=int, default=None,
                            help="Hora fin sesión ET (default: 16)")
+    p_monitor.add_argument("--no-gate", action="store_true",
+                           help="Desactivar Execution Gate LLM")
+    p_monitor.add_argument("--no-orders", action="store_true",
+                           help="No lanzar órdenes en TastyTrade")
+    p_monitor.add_argument("--live", action="store_true",
+                           help="Modo live (sobrescribe MANCINI_DRY_RUN)")
 
     # status
     sub.add_parser("status", help="Muestra estado actual")
