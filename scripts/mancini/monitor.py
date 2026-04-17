@@ -155,41 +155,100 @@ class ManciniMonitor:
         save_detectors(self.detectors, self.state_path)
         save_intraday_state(self.intraday_state, self.intraday_path)
 
-    def _check_plan_updates(self) -> None:
-        """Recarga el plan si el fichero ha cambiado (scan de tweets actualizó)."""
-        if not self.plan_path.exists():
-            return
-        mtime = self.plan_path.stat().st_mtime
-        if mtime > self._plan_mtime:
-            old_plan = self.plan
-            self.plan = load_plan(self.plan_path)
-            self._plan_mtime = mtime
+    def _scan_for_plan(self) -> bool:
+        """Busca tweets de Mancini y extrae el plan del día.
 
-            # Validar que el plan recargado corresponde a hoy (ET)
+        Integra la lógica del scan dentro del monitor: fetch tweets,
+        parsear con Haiku, guardar plan. Reintenta cada poll_interval
+        hasta session_end.
+
+        Returns:
+            True si se encontró plan, False si se agotó el tiempo.
+        """
+        from scripts.mancini.tweet_fetcher import fetch_mancini_tweets
+        from scripts.mancini.tweet_parser import parse_tweets_to_plan
+        from scripts.mancini.logger import append_scan_result
+
+        today_et = _now_et().strftime("%Y-%m-%d")
+        _log("Buscando plan de hoy en tweets de Mancini...")
+
+        while True:
+            now = _now_et()
+            if now.hour >= self.session_end:
+                _log("Fin de sesión sin plan — cerrando monitor")
+                return False
+
+            # 1. Intentar cargar plan existente de disco (otro proceso pudo crearlo)
+            self.load_state()
             if self.plan:
-                today_et = _now_et().strftime("%Y-%m-%d")
-                if self.plan.fecha != today_et:
-                    _log(f"Plan recargado descartado: fecha {self.plan.fecha} != hoy {today_et}")
-                    self.plan = old_plan
-                    return
+                _log("Plan de hoy encontrado en disco")
+                self._log_plan_info()
+                return True
 
-            if self.plan and old_plan:
-                # Detectar nuevos targets
-                new_up = set(self.plan.targets_upper) - set(old_plan.targets_upper)
-                new_down = set(self.plan.targets_lower) - set(old_plan.targets_lower)
-                new_upper = self.plan.key_level_upper != old_plan.key_level_upper
-                new_lower = self.plan.key_level_lower != old_plan.key_level_lower
-                if new_up or new_down or new_upper or new_lower:
-                    _log(f"Plan actualizado — nuevos targets: up={new_up} down={new_down}")
-                    notifier.notify_plan_loaded(
-                        self.plan.to_dict(),
-                        session_start=self.session_start,
-                        session_end=self.session_end,
+            # 2. Fetch tweets y parsear
+            try:
+                tweets = fetch_mancini_tweets(max_tweets=20)
+            except Exception as e:
+                _log(f"Error fetching tweets: {e}")
+                time.sleep(self.poll_interval)
+                continue
+
+            if not tweets:
+                _log("Sin tweets de Mancini hoy — reintentando...")
+                time.sleep(self.poll_interval)
+                continue
+
+            _log(f"Encontrados {len(tweets)} tweets, parseando con Haiku...")
+
+            try:
+                plan = parse_tweets_to_plan(tweets, today_et)
+            except Exception as e:
+                _log(f"Error parseando tweets: {e}")
+                append_scan_result("parse_error", len(tweets), False, str(e), today_et)
+                time.sleep(self.poll_interval)
+                continue
+
+            if plan is None:
+                _log("Haiku no encontró plan nuevo — reintentando...")
+                append_scan_result("no_plan", len(tweets), False, "no plan", today_et)
+                time.sleep(self.poll_interval)
+                continue
+
+            # 3. Merge con plan existente o guardar nuevo
+            existing = load_plan(self.plan_path)
+            if existing and existing.fecha == today_et:
+                for tweet_text in plan.raw_tweets:
+                    existing.merge_update(
+                        new_targets_upper=plan.targets_upper,
+                        new_targets_lower=plan.targets_lower,
+                        new_tweet=tweet_text,
                     )
-                    # Reiniciar detectores si cambiaron los niveles clave
-                    if new_upper or new_lower:
-                        _log("Niveles clave cambiaron — reiniciando detectores")
-                        self._init_detectors()
+                if plan.chop_zone and not existing.chop_zone:
+                    existing.chop_zone = plan.chop_zone
+                save_plan(existing, self.plan_path)
+                plan = existing
+            else:
+                save_plan(plan, self.plan_path)
+
+            self.plan = plan
+            self.trade_manager.fecha = plan.fecha
+            self._plan_mtime = self.plan_path.stat().st_mtime if self.plan_path.exists() else 0
+            self._init_detectors()
+
+            # Marcar tweets como procesados (evitar que el clasificador los re-procese)
+            for t in tweets:
+                self.intraday_state.processed_tweet_ids.add(t["id"])
+            self.save_state()
+
+            append_scan_result("success", len(tweets), True, "", today_et)
+            _log("Plan creado!")
+            self._log_plan_info()
+            notifier.notify_plan_loaded(
+                plan.to_dict(),
+                session_start=self.session_start,
+                session_end=self.session_end,
+            )
+            return True
 
     def poll_es(self) -> float | None:
         """Obtiene precio actual de /ES. Retorna None si falla."""
@@ -641,26 +700,8 @@ class ManciniMonitor:
             _log(f"Weekly: no cargado (sesgo={bias})")
 
     def _wait_for_plan(self) -> bool:
-        """Espera a que el scan cree el plan de hoy. Retorna True si encontrado.
-
-        Reintenta cada poll_interval hasta session_end. Si el plan aparece
-        en disco (creado por el scan que corre en paralelo), lo carga y retorna True.
-        """
-        _log("Sin plan de hoy — esperando a que el scan lo cree...")
-        while True:
-            now = _now_et()
-            if now.hour >= self.session_end:
-                _log("Fin de sesión sin plan — cerrando monitor")
-                return False
-
-            # Intentar cargar plan (load_state valida la fecha)
-            self.load_state()
-            if self.plan:
-                _log("Plan de hoy detectado!")
-                self._log_plan_info()
-                return True
-
-            time.sleep(self.poll_interval)
+        """Alias de _scan_for_plan para compatibilidad con tests."""
+        return self._scan_for_plan()
 
     def run(self) -> None:
         """Loop principal del monitor. Se auto-finaliza a SESSION_END_HOUR ET."""
@@ -686,14 +727,11 @@ class ManciniMonitor:
                         time.sleep(self.poll_interval)
                         continue
 
-                    # Si no hay plan, esperar a que el scan lo cree
+                    # Si no hay plan, buscarlo en tweets de Mancini
                     if not self.plan:
-                        if not self._wait_for_plan():
+                        if not self._scan_for_plan():
                             break
                         continue
-
-                    # Recargar plan si cambió
-                    self._check_plan_updates()
 
                     # Poll
                     price = self.poll_es()
