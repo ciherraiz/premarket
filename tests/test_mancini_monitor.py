@@ -211,25 +211,13 @@ def test_state_persistence(monitor, sample_plan, state_path):
     assert lower["state"] == "BREAKDOWN"
 
 
-def test_plan_update_detection(monitor, sample_plan, plan_path):
-    """Monitor detecta cuando el plan cambia en disco."""
-    monitor.load_state()
-    old_targets = list(monitor.plan.targets_upper)
-
-    # Simular que el scan de tweets actualizo el plan
-    import time
-    time.sleep(0.1)  # Asegurar mtime diferente
-    updated_plan = DailyPlan(
-        fecha="2026-04-10",
-        key_level_upper=6809,
-        targets_upper=[6819, 6830, 6846],
-        key_level_lower=6781,
-        targets_lower=[6766],
-    )
-    save_plan(updated_plan, plan_path)
-
-    monitor._check_plan_updates()
-    assert 6846 in monitor.plan.targets_upper
+def test_scan_for_plan_finds_existing(monitor, sample_plan):
+    """_scan_for_plan encuentra plan existente en disco."""
+    # Plan ya existe en disco (sample_plan fixture)
+    found = monitor._scan_for_plan()
+    assert found is True
+    assert monitor.plan is not None
+    assert monitor.plan.key_level_upper == 6809
 
 
 # ── close_session ───────────────────────────────────────────────────
@@ -423,39 +411,11 @@ def test_load_state_stale_plan_discarded(plan_path, state_path, weekly_path):
     assert m.detectors == []
 
 
-def test_check_plan_updates_rejects_stale(monitor, sample_plan, plan_path):
-    """_check_plan_updates descarta plan recargado con fecha incorrecta."""
-    monitor.load_state()
-    assert monitor.plan is not None  # Plan de hoy (2026-04-10)
+# ── Scan for plan ─────────────────────────────────────────────────
 
-    # Simular que alguien escribe un plan con fecha de ayer
-    import time
-    time.sleep(0.1)
-    stale_plan = DailyPlan(
-        fecha="2026-04-09",
-        key_level_upper=6800,
-        targets_upper=[6810],
-        key_level_lower=6770,
-        targets_lower=[6760],
-    )
-    save_plan(stale_plan, plan_path)
-
-    monitor._check_plan_updates()
-    # Debe mantener el plan original, no el stale
-    assert monitor.plan.fecha == "2026-04-10"
-
-
-# ── Wait for plan ──────────────────────────────────────────────────
-
-def test_wait_for_plan_finds_plan(plan_path, state_path, weekly_path):
-    """_wait_for_plan detecta cuando el scan crea el plan en disco."""
-    m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
-                       weekly_path=weekly_path, poll_interval=0)
-    # No hay plan inicialmente
-    m.load_state()
-    assert m.plan is None
-
-    # Simular que el scan crea el plan durante la espera
+def test_scan_for_plan_finds_existing_on_disk(plan_path, state_path, weekly_path):
+    """_scan_for_plan detecta plan existente en disco."""
+    # Crear plan en disco antes de arrancar
     plan = DailyPlan(
         fecha="2026-04-10",
         key_level_upper=6809,
@@ -465,19 +425,55 @@ def test_wait_for_plan_finds_plan(plan_path, state_path, weekly_path):
     )
     save_plan(plan, plan_path)
 
-    # _wait_for_plan debería encontrar el plan en la primera iteración
-    found = m._wait_for_plan()
+    m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
+                       weekly_path=weekly_path, poll_interval=0, gate_enabled=False)
+
+    found = m._scan_for_plan()
     assert found is True
     assert m.plan is not None
     assert m.plan.fecha == "2026-04-10"
 
 
-def test_wait_for_plan_respects_session_end(plan_path, state_path, weekly_path):
-    """_wait_for_plan se para al llegar a session_end sin plan."""
+def test_scan_for_plan_respects_session_end(plan_path, state_path, weekly_path):
+    """_scan_for_plan se para al llegar a session_end sin plan."""
     # session_end=9, _now_et devuelve 09:30 → ya pasó session_end
     m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
-                       weekly_path=weekly_path, session_end=9, poll_interval=0)
+                       weekly_path=weekly_path, session_end=9, poll_interval=0,
+                       gate_enabled=False)
 
-    found = m._wait_for_plan()
+    found = m._scan_for_plan()
     assert found is False
     assert m.plan is None
+
+
+@patch("scripts.mancini.tweet_parser.parse_tweets_to_plan")
+@patch("scripts.mancini.tweet_fetcher.fetch_mancini_tweets")
+def test_scan_for_plan_fetches_tweets(mock_fetch, mock_parse,
+                                       plan_path, state_path, weekly_path,
+                                       mock_notifier):
+    """_scan_for_plan hace fetch + parse cuando no hay plan en disco."""
+    mock_fetch.return_value = [
+        {"id": "t1", "text": "ES 7058 reclaims, see 7103, 7116", "created_at": "2026-04-10T08:00:00-04:00"},
+    ]
+    mock_parse.return_value = DailyPlan(
+        fecha="2026-04-10",
+        key_level_upper=7058,
+        targets_upper=[7103, 7116],
+        key_level_lower=None,
+        targets_lower=[],
+        raw_tweets=["ES 7058 reclaims, see 7103, 7116"],
+    )
+
+    m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
+                       weekly_path=weekly_path, poll_interval=0, gate_enabled=False)
+
+    with patch("scripts.mancini.monitor._now_et",
+               return_value=datetime(2026, 4, 10, 9, 30, 0, tzinfo=ET)):
+        found = m._scan_for_plan()
+
+    assert found is True
+    assert m.plan.key_level_upper == 7058
+    assert m.plan.targets_upper == [7103, 7116]
+    # Tweet marcado como procesado para que el clasificador no lo re-procese
+    assert "t1" in m.intraday_state.processed_tweet_ids
+    mock_notifier.notify_plan_loaded.assert_called_once()
