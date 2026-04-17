@@ -248,6 +248,12 @@ class ManciniMonitor:
                 session_start=self.session_start,
                 session_end=self.session_end,
             )
+
+            # Chart inicial del plan
+            price = self.poll_es()
+            if price:
+                notifier.notify_plan_chart(self.plan, price, self.detectors)
+
             return True
 
     def poll_es(self) -> float | None:
@@ -306,6 +312,10 @@ class ManciniMonitor:
         if t.to_state == State.BREAKDOWN:
             _log(f"BREAKDOWN en {t.level} — ES={price} ({t.details.get('depth_pts', 0):+.1f} pts)")
             notifier.notify_breakdown(t.level, price, t.details.get("depth_pts", 0))
+            notifier.notify_plan_chart(
+                self.plan, price, self.detectors,
+                self.trade_manager.active_trade(),
+            )
 
         elif t.to_state == State.SIGNAL:
             _log(f"SIGNAL en {t.level} — ES={price}")
@@ -358,6 +368,9 @@ class ManciniMonitor:
                     breakdown_low=breakdown_low,
                     alignment=alignment,
                 )
+                notifier.notify_plan_chart(
+                    self.plan, price, self.detectors, trade,
+                )
                 _log(f"Trade abierto: {direction} {trade.entry_price} stop={trade.stop_price} [{alignment}]")
             else:
                 _log("No se pudo abrir trade (límite diario o trade activo)")
@@ -387,6 +400,10 @@ class ManciniMonitor:
                     _log(f"Error actualizando stop en TastyTrade: {result.error}")
 
             notifier.notify_target_hit(event)
+            notifier.notify_plan_chart(
+                self.plan, event["price"], self.detectors,
+                self._find_trade(event["trade_id"]),
+            )
 
         elif event["type"] == "TRADE_CLOSED":
             _log(f"Trade cerrado ({event['reason']}): P&L={event['pnl_total_pts']:+.1f} pts")
@@ -568,6 +585,17 @@ class ManciniMonitor:
                 self._apply_adjustment(adjustment)
                 notifier.notify_adjustment(adjustment)
                 applied.append(adjustment)
+
+                # Chart para ajustes que modifican niveles visuales
+                if adjustment.adjustment_type in (
+                    "LEVEL_UPDATE", "TARGET_UPDATE", "INVALIDATION"
+                ):
+                    price = self.poll_es()
+                    if price:
+                        notifier.notify_plan_chart(
+                            self.plan, price, self.detectors,
+                            self.trade_manager.active_trade(),
+                        )
 
         self.intraday_state.last_check = datetime.now(timezone.utc).isoformat()
         return applied
