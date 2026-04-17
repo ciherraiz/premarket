@@ -181,7 +181,8 @@ def notify_trade_rejected(decision) -> bool:
     return send_telegram("\n".join(lines))
 
 
-def notify_plan_chart(plan, es_price: float, detectors, trade=None) -> bool:
+def notify_plan_chart(plan, es_price: float, detectors, trade=None,
+                      price_history: list[tuple[str, float]] | None = None) -> bool:
     """Genera y envía gráfico del plan a Telegram."""
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -195,6 +196,7 @@ def notify_plan_chart(plan, es_price: float, detectors, trade=None) -> bool:
             detectors=detectors,
             trade=trade,
             timestamp_et=timestamp_et,
+            price_history=price_history,
         )
     except Exception as e:
         print(f"[notifier] Error generando chart: {e}")

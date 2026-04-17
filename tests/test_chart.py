@@ -110,6 +110,45 @@ class TestGenerateChart:
         result = generate_plan_chart(plan, 5820.0, [], timestamp_et="14:30 ET")
         assert result[:4] == PNG_HEADER
 
+    def test_with_price_history(self):
+        """Price history dibuja línea temporal con eje X."""
+        plan = _make_plan()
+        history = [("09:30", 5810.0), ("09:35", 5815.0), ("09:40", 5820.0)]
+        result = generate_plan_chart(plan, 5820.0, [], price_history=history)
+        assert result[:4] == PNG_HEADER
+
+    def test_with_empty_price_history(self):
+        """Historial vacío → fallback a línea horizontal."""
+        plan = _make_plan()
+        result = generate_plan_chart(plan, 5820.0, [], price_history=[])
+        assert result[:4] == PNG_HEADER
+
+    def test_with_single_point_history(self):
+        """Un solo punto → fallback (necesita >=2)."""
+        plan = _make_plan()
+        result = generate_plan_chart(plan, 5820.0, [],
+                                     price_history=[("09:30", 5810.0)])
+        assert result[:4] == PNG_HEADER
+
+    def test_price_history_with_trade(self):
+        """Historial + trade activo renderiza ambos."""
+        plan = _make_plan()
+        history = [("09:30", 5810.0), ("10:00", 5820.0), ("10:30", 5825.0)]
+        trade = _make_trade()
+        detectors = [_make_detector(5800.0, "lower", State.ACTIVE)]
+        result = generate_plan_chart(plan, 5825.0, detectors, trade=trade,
+                                     price_history=history)
+        assert result[:4] == PNG_HEADER
+        assert len(result) > 1000
+
+    def test_price_history_long_session(self):
+        """Sesión completa (540 ticks, 9h cada 60s) → no falla."""
+        plan = _make_plan()
+        history = [(f"{7 + i // 60:02d}:{i % 60:02d}", 5800.0 + i * 0.1)
+                   for i in range(540)]
+        result = generate_plan_chart(plan, 5854.0, [], price_history=history)
+        assert result[:4] == PNG_HEADER
+
 
 class TestDetectorStyle:
     @pytest.mark.parametrize("state,expected_text", [
