@@ -180,16 +180,32 @@ def generate_plan_chart(
                 fontfamily="monospace", transform=ytx, alpha=alpha)
 
     # ── 3. Niveles clave con estado del detector ──────────────────
+    # Líneas horizontales en el gráfico
     for detector in detectors:
-        color, status_text = _detector_style(detector)
+        color, _status_text = _detector_style(detector)
         ax.axhline(y=detector.level, color=color, linewidth=2.5, alpha=0.9)
         side_label = "upper" if detector.side == "upper" else "lower"
         ax.text(0.72, detector.level,
-                f"{detector.level:.0f}  Nivel {side_label}\n"
-                f"         {status_text}",
+                f"{detector.level:.0f}  Nivel {side_label}",
                 color=color, fontsize=9, va="center",
                 fontweight="bold", fontfamily="monospace",
                 transform=ytx)
+
+    # Panel de estado: esquina superior izquierda, fuera de la zona de datos
+    if detectors:
+        status_lines = []
+        for detector in detectors:
+            color, status_text = _detector_style(detector)
+            side_label = "Upper" if detector.side == "upper" else "Lower"
+            status_lines.append(f"{detector.level:.0f} {side_label}: {status_text}")
+        status_block = "\n".join(status_lines)
+        ax.text(0.02, 0.97, status_block,
+                color="white", fontsize=9,
+                fontfamily="monospace", fontweight="bold",
+                va="top", transform=ax.transAxes,
+                bbox=dict(boxstyle="round,pad=0.4",
+                          facecolor=BG_OUTER, edgecolor="#555555",
+                          alpha=0.9))
 
     # ── 4. Chop zone ─────────────────────────────────────────────
     if plan.chop_zone:
