@@ -159,21 +159,25 @@ def generate_plan_chart(
 
     # ── 1. Targets upper ──────────────────────────────────────────
     for i, target in enumerate(plan.targets_upper):
-        hit = trade is not None and trade.targets_hit > i
-        color = COLOR_TARGET_HIT if hit else COLOR_TARGET_UP
-        label = f"Target {i + 1} \u2713" if hit else f"Target {i + 1}"
-        ax.axhline(y=target, color=color, linestyle=":", linewidth=1, alpha=0.7)
+        passed = target <= es_price
+        color = COLOR_TARGET_HIT if passed else COLOR_TARGET_UP
+        alpha = 0.4 if passed else 0.7
+        label = f"Target {i + 1} \u2713" if passed else f"Target {i + 1}"
+        ax.axhline(y=target, color=color, linestyle=":", linewidth=1, alpha=alpha)
         ax.text(0.72, target, f"{target:.0f}  {label}",
                 color=color, fontsize=9, va="center",
-                fontfamily="monospace", transform=ytx)
+                fontfamily="monospace", transform=ytx, alpha=alpha)
 
     # ── 2. Targets lower ──────────────────────────────────────────
     for i, target in enumerate(plan.targets_lower):
-        color = COLOR_TARGET_DOWN
-        ax.axhline(y=target, color=color, linestyle=":", linewidth=1, alpha=0.7)
-        ax.text(0.72, target, f"{target:.0f}  Target {i + 1} \u2193",
+        passed = target >= es_price
+        color = COLOR_TARGET_HIT if passed else COLOR_TARGET_DOWN
+        alpha = 0.4 if passed else 0.7
+        label = f"Target {i + 1} \u2193 \u2713" if passed else f"Target {i + 1} \u2193"
+        ax.axhline(y=target, color=color, linestyle=":", linewidth=1, alpha=alpha)
+        ax.text(0.72, target, f"{target:.0f}  {label}",
                 color=color, fontsize=9, va="center",
-                fontfamily="monospace", transform=ytx)
+                fontfamily="monospace", transform=ytx, alpha=alpha)
 
     # ── 3. Niveles clave con estado del detector ──────────────────
     for detector in detectors:
