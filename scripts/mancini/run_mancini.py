@@ -59,7 +59,7 @@ def _setup_dual_output(log_path: Path) -> None:
     sys.stderr = _Tee(log_path)  # type: ignore[assignment]
 
 from scripts.mancini.config import (
-    load_plan, save_plan, save_weekly, load_intraday_state,
+    load_plan, save_plan, save_weekly, load_weekly, load_intraday_state,
     PLAN_PATH, INTRADAY_STATE_PATH,
 )
 from scripts.mancini.detector import load_detectors, STATE_PATH, save_detectors
@@ -174,6 +174,12 @@ def cmd_weekly_scan(args) -> None:
         monday = now + timedelta(days=(7 - weekday))
     week_start = monday.strftime("%Y-%m-%d")
 
+    # Si ya existe plan para esta semana, no buscar más
+    existing = load_weekly()
+    if existing and existing.fecha == week_start:
+        print(f"Plan semanal ya existe para {week_start} — nada que hacer")
+        sys.exit(0)
+
     # Fetch tweets Big Picture del fin de semana
     try:
         tweets = fetch_mancini_weekend_tweets()
@@ -200,7 +206,7 @@ def cmd_weekly_scan(args) -> None:
         print("Haiku determinó que no hay plan semanal claro")
         sys.exit(0)
 
-    # Guardar (sobreescribe si ya existe)
+    # Guardar y notificar (primera y única vez)
     save_weekly(plan)
     notifier.notify_weekly_plan(plan.to_dict())
     print(f"Plan semanal guardado para semana del {week_start}")
