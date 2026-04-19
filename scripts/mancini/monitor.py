@@ -203,19 +203,35 @@ class ManciniMonitor:
                 time.sleep(self.tweet_poll_interval)
                 continue
 
-            _log(f"Encontrados {len(tweets)} tweets, parseando con Haiku...")
+            # Filtrar tweets ya procesados (descartados o usados en plan anterior)
+            new_tweets = [
+                t for t in tweets
+                if t["id"] not in self.intraday_state.processed_tweet_ids
+            ]
 
-            try:
-                plan = parse_tweets_to_plan(tweets, today_et)
-            except Exception as e:
-                _log(f"Error parseando tweets: {e}")
-                append_scan_result("parse_error", len(tweets), False, str(e), today_et)
+            if not new_tweets:
+                _log(f"Sin tweets nuevos (todos ya procesados) — reintentando en {self.tweet_poll_interval // 60} min...")
                 time.sleep(self.tweet_poll_interval)
                 continue
 
+            _log(f"Encontrados {len(new_tweets)} tweets nuevos, parseando con Haiku...")
+
+            try:
+                plan = parse_tweets_to_plan(new_tweets, today_et)
+            except Exception as e:
+                _log(f"Error parseando tweets: {e}")
+                append_scan_result("parse_error", len(new_tweets), False, str(e), today_et)
+                time.sleep(self.tweet_poll_interval)
+                continue
+
+            # Marcar como procesados SIEMPRE (con o sin plan)
+            for t in new_tweets:
+                self.intraday_state.processed_tweet_ids.add(t["id"])
+            self.save_state()
+
             if plan is None:
                 _log(f"Haiku no encontró plan nuevo — reintentando en {self.tweet_poll_interval // 60} min...")
-                append_scan_result("no_plan", len(tweets), False, "no plan", today_et)
+                append_scan_result("no_plan", len(new_tweets), False, "no plan", today_et)
                 time.sleep(self.tweet_poll_interval)
                 continue
 
@@ -239,13 +255,9 @@ class ManciniMonitor:
             self.trade_manager.fecha = plan.fecha
             self._plan_mtime = self.plan_path.stat().st_mtime if self.plan_path.exists() else 0
             self._init_detectors()
-
-            # Marcar tweets como procesados (evitar que el clasificador los re-procese)
-            for t in tweets:
-                self.intraday_state.processed_tweet_ids.add(t["id"])
             self.save_state()
 
-            append_scan_result("success", len(tweets), True, "", today_et)
+            append_scan_result("success", len(new_tweets), True, "", today_et)
             _log("Plan creado!")
             self._log_plan_info()
             notifier.notify_plan_loaded(
