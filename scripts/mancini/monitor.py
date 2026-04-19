@@ -41,7 +41,8 @@ from scripts.mancini import notifier
 ET = ZoneInfo("America/New_York")
 
 # ── Constantes ──────────────────────────────────────────────────────
-POLL_INTERVAL_S = 60
+POLL_INTERVAL_S = 60       # Polling de precio /ES (con plan activo)
+TWEET_POLL_INTERVAL_S = 600  # Polling de tweets (10 min) — buscar plan o cambios intraday
 SESSION_START_HOUR = 7   # 07:00 ET (13:00 CEST)
 SESSION_END_HOUR = 16    # 16:00 ET (22:00 CEST) — cierre mercado regular
 
@@ -59,6 +60,7 @@ class ManciniMonitor:
     """Orquesta polling, detección y gestión de trades."""
 
     def __init__(self, client=None, poll_interval: int = POLL_INTERVAL_S,
+                 tweet_poll_interval: int = TWEET_POLL_INTERVAL_S,
                  plan_path: Path = PLAN_PATH, state_path: Path = STATE_PATH,
                  weekly_path: Path = WEEKLY_PLAN_PATH,
                  intraday_path: Path = INTRADAY_STATE_PATH,
@@ -68,7 +70,8 @@ class ManciniMonitor:
                  gate_enabled: bool = True,
                  es_symbol: str = ""):
         self.client = client
-        self.poll_interval = poll_interval
+        self.poll_interval = poll_interval  # intervalo precio /ES (60s)
+        self.tweet_poll_interval = tweet_poll_interval  # intervalo tweets (600s)
         self.plan_path = plan_path
         self.state_path = state_path
         self.weekly_path = weekly_path
@@ -85,6 +88,7 @@ class ManciniMonitor:
         self.intraday_state = IntraDayState()
         self.price_history: list[tuple[str, float]] = []
         self._plan_mtime: float = 0
+        self._last_tweet_check: float = 0  # timestamp del último check de tweets
 
     def load_state(self) -> None:
         """Carga plan, weekly y detectores desde disco."""
@@ -160,8 +164,8 @@ class ManciniMonitor:
         """Busca tweets de Mancini y extrae el plan del día.
 
         Integra la lógica del scan dentro del monitor: fetch tweets,
-        parsear con Haiku, guardar plan. Reintenta cada poll_interval
-        hasta session_end.
+        parsear con Haiku, guardar plan. Reintenta cada tweet_poll_interval
+        (10 min) hasta session_end.
 
         Returns:
             True si se encontró plan, False si se agotó el tiempo.
@@ -191,12 +195,12 @@ class ManciniMonitor:
                 tweets = fetch_mancini_tweets(max_tweets=20)
             except Exception as e:
                 _log(f"Error fetching tweets: {e}")
-                time.sleep(self.poll_interval)
+                time.sleep(self.tweet_poll_interval)
                 continue
 
             if not tweets:
-                _log("Sin tweets de Mancini hoy — reintentando...")
-                time.sleep(self.poll_interval)
+                _log(f"Sin tweets de Mancini hoy — reintentando en {self.tweet_poll_interval // 60} min...")
+                time.sleep(self.tweet_poll_interval)
                 continue
 
             _log(f"Encontrados {len(tweets)} tweets, parseando con Haiku...")
@@ -206,13 +210,13 @@ class ManciniMonitor:
             except Exception as e:
                 _log(f"Error parseando tweets: {e}")
                 append_scan_result("parse_error", len(tweets), False, str(e), today_et)
-                time.sleep(self.poll_interval)
+                time.sleep(self.tweet_poll_interval)
                 continue
 
             if plan is None:
-                _log("Haiku no encontró plan nuevo — reintentando...")
+                _log(f"Haiku no encontró plan nuevo — reintentando en {self.tweet_poll_interval // 60} min...")
                 append_scan_result("no_plan", len(tweets), False, "no plan", today_et)
-                time.sleep(self.poll_interval)
+                time.sleep(self.tweet_poll_interval)
                 continue
 
             # 3. Merge con plan existente o guardar nuevo
@@ -762,7 +766,7 @@ class ManciniMonitor:
                     # Esperar a session_start
                     if now.hour < self.session_start:
                         _log(f"Esperando inicio de sesión ({self.session_start}:00 ET)...")
-                        time.sleep(self.poll_interval)
+                        time.sleep(self.tweet_poll_interval)
                         continue
 
                     # Si no hay plan, buscarlo en tweets de Mancini
@@ -780,8 +784,11 @@ class ManciniMonitor:
                     _log(f"ES={price:.2f}")
                     self.process_tick(price)
 
-                    # Clasificar tweets intraday nuevos
-                    if self.plan:
+                    # Clasificar tweets intraday nuevos (cada tweet_poll_interval)
+                    now_ts = time.time()
+                    if (self.plan
+                            and now_ts - self._last_tweet_check >= self.tweet_poll_interval):
+                        self._last_tweet_check = now_ts
                         self.check_intraday_updates()
 
                     self.save_state()
