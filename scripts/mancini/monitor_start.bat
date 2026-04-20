@@ -1,6 +1,6 @@
 @echo off
 REM Lanza el monitor Mancini /ES como proceso de larga duración.
-REM Diseñado para ejecutarse desde Windows Task Scheduler a las 13:00 CEST (07:00 ET).
+REM Diseñado para ejecutarse desde Windows Task Scheduler a las 09:00 CEST (03:00 ET).
 REM El monitor corre hasta 16:00 ET y se auto-finaliza.
 
 title Mancini Monitor /ES
