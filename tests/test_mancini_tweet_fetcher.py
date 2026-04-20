@@ -233,8 +233,16 @@ def _yesterday_x_date(hour=10) -> str:
     return utc.strftime("%a %b %d %H:%M:%S +0000 %Y")
 
 
-def test_fetch_tweets_filters_today(tmp_path, monkeypatch):
-    """Solo retorna tweets de hoy."""
+def _two_days_ago_x_date(hour=10) -> str:
+    """Genera fecha en formato X para hace 2 días."""
+    now = datetime.now(ET).replace(hour=hour, minute=0, second=0, microsecond=0)
+    two_days = now - timedelta(days=2)
+    utc = two_days.astimezone()
+    return utc.strftime("%a %b %d %H:%M:%S +0000 %Y")
+
+
+def _mock_cookies(tmp_path, monkeypatch):
+    """Helper: crea cookies mock y las registra."""
     cookies_file = tmp_path / "cookies.json"
     cookies_file.write_text(json.dumps([
         {"name": "ct0", "value": "abc"},
@@ -244,11 +252,15 @@ def test_fetch_tweets_filters_today(tmp_path, monkeypatch):
         "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
     )
 
+
+def test_fetch_tweets_includes_today(tmp_path, monkeypatch):
+    """Tweets de hoy se incluyen."""
+    _mock_cookies(tmp_path, monkeypatch)
+
     with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build, \
          patch("scripts.mancini.tweet_fetcher._search_tweets") as mock_search:
         mock_search.return_value = [
             {"id": "1", "text": "ES plan today", "created_at": _today_x_date()},
-            {"id": "2", "text": "old plan", "created_at": _yesterday_x_date()},
         ]
         mock_build.return_value = MagicMock()
 
@@ -260,16 +272,82 @@ def test_fetch_tweets_filters_today(tmp_path, monkeypatch):
     assert "created_at" in result[0]
 
 
+def test_fetch_tweets_includes_yesterday_post_close(tmp_path, monkeypatch):
+    """Tweets de ayer después de las 16:00 ET se incluyen (plan post-cierre)."""
+    _mock_cookies(tmp_path, monkeypatch)
+
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build, \
+         patch("scripts.mancini.tweet_fetcher._search_tweets") as mock_search:
+        # Tweet de ayer a las 20:00 ET (post-cierre RTH)
+        mock_search.return_value = [
+            {"id": "1", "text": "Sunday plan for Monday", "created_at": _yesterday_x_date(hour=20)},
+        ]
+        mock_build.return_value = MagicMock()
+
+        result = fetch_mancini_tweets()
+
+    assert len(result) == 1
+    assert result[0]["text"] == "Sunday plan for Monday"
+
+
+def test_fetch_tweets_excludes_yesterday_pre_close(tmp_path, monkeypatch):
+    """Tweets de ayer antes de las 16:00 ET se excluyen (sesión anterior)."""
+    _mock_cookies(tmp_path, monkeypatch)
+
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build, \
+         patch("scripts.mancini.tweet_fetcher._search_tweets") as mock_search:
+        # Tweet de ayer a las 10:00 ET (durante sesión anterior)
+        mock_search.return_value = [
+            {"id": "1", "text": "old intraday tweet", "created_at": _yesterday_x_date(hour=10)},
+        ]
+        mock_build.return_value = MagicMock()
+
+        result = fetch_mancini_tweets()
+
+    assert len(result) == 0
+
+
+def test_fetch_tweets_excludes_two_days_ago(tmp_path, monkeypatch):
+    """Tweets de hace 2 días se excluyen siempre."""
+    _mock_cookies(tmp_path, monkeypatch)
+
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build, \
+         patch("scripts.mancini.tweet_fetcher._search_tweets") as mock_search:
+        mock_search.return_value = [
+            {"id": "1", "text": "very old tweet", "created_at": _two_days_ago_x_date(hour=20)},
+        ]
+        mock_build.return_value = MagicMock()
+
+        result = fetch_mancini_tweets()
+
+    assert len(result) == 0
+
+
+def test_fetch_tweets_mixed_window(tmp_path, monkeypatch):
+    """Mezcla: incluye hoy + ayer post-cierre, excluye ayer pre-cierre."""
+    _mock_cookies(tmp_path, monkeypatch)
+
+    with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build, \
+         patch("scripts.mancini.tweet_fetcher._search_tweets") as mock_search:
+        mock_search.return_value = [
+            {"id": "1", "text": "today morning", "created_at": _today_x_date(hour=8)},
+            {"id": "2", "text": "yesterday evening plan", "created_at": _yesterday_x_date(hour=19)},
+            {"id": "3", "text": "yesterday intraday", "created_at": _yesterday_x_date(hour=10)},
+            {"id": "4", "text": "two days ago", "created_at": _two_days_ago_x_date(hour=20)},
+        ]
+        mock_build.return_value = MagicMock()
+
+        result = fetch_mancini_tweets()
+
+    assert len(result) == 2
+    texts = {t["text"] for t in result}
+    assert "today morning" in texts
+    assert "yesterday evening plan" in texts
+
+
 def test_fetch_tweets_empty_timeline(tmp_path, monkeypatch):
-    """Timeline sin tweets de hoy devuelve lista vacía."""
-    cookies_file = tmp_path / "cookies.json"
-    cookies_file.write_text(json.dumps([
-        {"name": "ct0", "value": "abc"},
-        {"name": "auth_token", "value": "xyz"},
-    ]))
-    monkeypatch.setattr(
-        "scripts.mancini.tweet_fetcher.COOKIES_PATH", cookies_file
-    )
+    """Timeline sin tweets devuelve lista vacía."""
+    _mock_cookies(tmp_path, monkeypatch)
 
     with patch("scripts.mancini.tweet_fetcher._build_client") as mock_build, \
          patch("scripts.mancini.tweet_fetcher._search_tweets") as mock_search:
