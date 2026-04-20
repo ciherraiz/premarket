@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -274,7 +274,13 @@ def _parse_x_datetime(date_str: str) -> datetime | None:
 
 
 def fetch_mancini_tweets(max_tweets: int = 20) -> list[dict]:
-    """Obtiene tweets recientes de Mancini, filtrados a hoy (ET)."""
+    """Obtiene tweets recientes de Mancini desde el cierre RTH anterior.
+
+    Ventana de búsqueda: desde las 16:00 ET del día anterior hasta ahora.
+    Mancini publica el plan de la siguiente sesión después del cierre (16:00 ET),
+    por ejemplo el domingo por la noche para el lunes. Este filtro captura tanto
+    tweets post-cierre del día anterior como tweets del día actual.
+    """
     cookies = _load_cookies()
     client = _build_client(cookies)
 
@@ -282,15 +288,19 @@ def fetch_mancini_tweets(max_tweets: int = 20) -> list[dict]:
         client, f"from:{MANCINI_SCREEN_NAME}", count=max_tweets
     )
 
-    today = datetime.now(ET).strftime("%Y-%m-%d")
+    # Ventana: desde 16:00 ET del día anterior
+    now_et = datetime.now(ET)
+    yesterday = now_et - timedelta(days=1)
+    cutoff = yesterday.replace(hour=16, minute=0, second=0, microsecond=0)
+
     result = []
 
     for tweet in raw_tweets:
         dt = _parse_x_datetime(tweet["created_at"])
         if dt is None:
             continue
-        tweet_date = dt.astimezone(ET).strftime("%Y-%m-%d")
-        if tweet_date != today:
+        dt_et = dt.astimezone(ET)
+        if dt_et < cutoff:
             continue
         result.append({
             "id": tweet["id"],

@@ -136,8 +136,16 @@ Append-only en `logs/mancini_trades.jsonl`. Cada trade:
 1. Carga cookies exportadas con Cookie-Editor (`cookies.json`)
 2. Auto-descubre hashes GraphQL desde JS bundles de x.com (sobrevive rotaciones)
 3. Usa endpoint SearchTimeline (POST) con query `from:AdamMancini4` — tiempo real
-4. Filtrado a tweets del día (timezone ET)
+4. Filtrado por ventana de sesión (ver abajo)
 5. Retorna lista de `{id, text, created_at}`
+
+**Ventana de búsqueda de tweets**: Mancini publica el plan para la siguiente
+sesión después del cierre RTH (16:00 ET). Por ejemplo, el domingo por la noche
+publica el plan del lunes. Por tanto, `fetch_mancini_tweets` busca tweets desde
+las **16:00 ET del día anterior** hasta el momento actual. Esto cubre:
+- Tweets post-cierre del día anterior (plan para mañana)
+- Tweets pre-apertura del día actual (ajustes matutinos)
+- Tweets intraday del día actual
 
 Ver `specs/mancini_realtime_tweets.md` para detalle de la migración de UserTweets a SearchTimeline.
 
