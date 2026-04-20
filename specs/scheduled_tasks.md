@@ -72,21 +72,23 @@ intraday de Mancini.
 
 **Script**: `scripts/mancini/monitor_start.bat`
 **Subcomando**: `run_mancini.py monitor`
-**Ventana**: 13:00–22:00 CEST (07:00–16:00 ET)
+**Ventana**: 09:00–22:00 CEST (03:00–16:00 ET)
 **Cadencia**: una sola invocación (el monitor corre su propio loop de polling)
 
 | Parámetro Task Scheduler | Valor |
 |---|---|
 | Nombre | `ManciniMonitor` |
-| Trigger | Lun-Vie, inicio 13:00 CEST |
+| Trigger | Lun-Vie, inicio 09:00 CEST |
 | Acción | `scripts/mancini/monitor_start.bat` |
 | Múltiples instancias | No iniciar nueva si ya hay una corriendo |
 
-El monitor arranca a las 13:00 CEST y espera internamente hasta
-`SESSION_START_HOUR` (07:00 ET). Si no hay plan del día cuando entra en
-sesión, **espera y reintenta** cada 60s en vez de pararse — el scan corre
-en paralelo y creará el plan cuando Mancini publique. En cuanto el plan
-aparece, el monitor lo carga y empieza a pollear /ES.
+El monitor arranca a las 09:00 CEST (apertura sesión europea) y empieza
+a pollear /ES inmediatamente (`SESSION_START_HOUR` = 03:00 ET). Esto
+permite capturar movimientos que ocurren durante la sesión europea,
+antes de la apertura RTH de EE.UU. Si no hay plan del día, **espera y
+reintenta** cada 10 min — el scan corre en paralelo y creará el plan
+cuando Mancini publique. En cuanto el plan aparece, el monitor lo carga
+y empieza a detectar patrones.
 
 **Session end**: el monitor se auto-finaliza a las 16:00 ET (`SESSION_END_HOUR`).
 
@@ -190,9 +192,9 @@ pero no se ejecutan. No hay API de borrado, solo desactivación.
 ## Resumen visual — Día entre semana (horario CEST)
 
 ```
+09:00 ─── ManciniMonitor arranca (03:00 ET, sesión europea) ────
 13:00 ─── ManciniScan comienza (cada 10 min) ───────────────────
-13:00     ManciniMonitor arranca (espera plan + session_start)
-  ...     Monitor reintenta cada 60s hasta que el scan cree el plan
+  ...     Monitor pollea /ES, scan busca tweets de Mancini
 15:30 ─── Apertura mercado (09:30 ET) ───────────────────────────
 22:00 ─── ManciniScan + ManciniMonitor terminan (16:00 ET) ──────
 ```
