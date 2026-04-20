@@ -93,17 +93,19 @@ aparece, el monitor lo carga y empieza a pollear /ES.
 ### 3. ManciniMonitorDomingo (domingos)
 
 **Script**: `scripts/mancini/monitor_sunday.bat`
-**Subcomando**: `run_mancini.py monitor --start 13 --end 24`
-**Ventana**: 19:00 CEST domingo – 00:00 ET lunes
+**Subcomando**: `run_mancini.py monitor --start 18 --end 24`
+**Ventana**: 00:00 CEST lunes (18:00 ET domingo) – 06:00 CEST lunes (00:00 ET)
 
 | Parámetro Task Scheduler | Valor |
 |---|---|
 | Nombre | `ManciniMonitorDomingo` |
-| Trigger | Domingos, inicio 19:00 CEST |
+| Trigger | Domingos, inicio 00:00 CEST (lunes) |
 | Acción | `scripts/mancini/monitor_sunday.bat` |
 
-Futuros /ES abren a las 18:00 ET los domingos. Este monitor usa la ventana
-extendida `--start 13 --end 24` para cubrir la sesión nocturna.
+Futuros /ES abren a las 18:00 ET los domingos. El monitor usa `--start 18`
+para alinearse con la apertura real de futuros y `--end 24` para cubrir
+la sesión nocturna hasta medianoche ET. El lunes a las 13:00 CEST arranca
+el monitor normal (`monitor_start.bat`) que cubre la sesión RTH.
 
 ### 4. ManciniScanDomingo (domingos)
 
@@ -200,8 +202,9 @@ pero no se ejecutan. No hay API de borrado, solo desactivación.
 ```
 18:00     ManciniWeeklyScan (Sab+Dom, cada 2h hasta 00:00)
 18:00 ─── ManciniScanDomingo comienza (Dom, cada 10 min) ───────
-19:00     ManciniMonitorDomingo (Dom, espera plan + polling /ES)
 23:00 ─── ManciniScanDomingo termina ───────────────────────────
+00:00     ManciniMonitorDomingo (Lun, 18:00-00:00 ET = sesión nocturna)
+06:00 ─── ManciniMonitorDomingo termina (00:00 ET) ─────────────
 ```
 
 ---
