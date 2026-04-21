@@ -8,6 +8,7 @@ title Mancini Scan
 cd /d "C:\Users\ciher\Documents\Development\premarket"
 
 set PATH=C:\Users\ciher\.cargo\bin;%PATH%
+set PYTHONUTF8=1
 
 echo [%date% %time%] Arrancando scan Mancini... >> logs\mancini_scan.log
 
