@@ -50,13 +50,18 @@ Responde SOLO con JSON válido (sin markdown, sin explicaciones):
 - Números tras "sell", "fails" → targets_lower (descendente)
 - "X-Y=chop" / "chop zone" → chop_zone como [X, Y]
 - Si no hay chop zone → chop_zone: null
+- "Plan: X, Y, Z next slate" → targets_upper (nuevos objetivos de continuación)
+- "X=support" / "X-Y=support" → key_level_upper (soporte que debe mantenerse)
+- "ride runner" / "runner" = posición existente en curso, no es nivel nuevo
+- Si hay "Plan: X, Y, Z next slate" con "X=support", usa el nivel de soporte
+  como key_level_upper y los números del "Plan:" como targets_upper
 
 ## Notación especial de Mancini
 
 - "6793/88" = dos niveles: 6793 y 6788 (los últimos dígitos completan el número)
 - "6766-70" = rango 6766 a 6770 (usa 6766 como nivel)
 - "6900-05" = rango 6900 a 6905 (usa 6900 como nivel)
-- "(hit)" después de un target = ya alcanzado, incluir igualmente
+- "(hit)" / "(all hit)" después de un target = ya alcanzado, NO incluir en targets
 - "watch traps" = advertencia, no es un nivel
 - "runners" = posición existente, no nivel nuevo
 

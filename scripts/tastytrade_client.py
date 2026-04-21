@@ -48,6 +48,10 @@ class TastyTradeClient:
             raise EnvironmentError(
                 "TT_SECRET y TT_REFRESH deben estar definidos en .env"
             )
+        # Loop persistente: evita que asyncio.run() destruya y recree el loop
+        # en cada llamada, lo que invalida las conexiones internas de Session.
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
         self.session = Session(provider_secret=secret, refresh_token=refresh)
 
     def get_future_quote(self, symbol: str) -> dict:
@@ -81,7 +85,7 @@ class TastyTradeClient:
         }
 
         try:
-            quote_data = asyncio.run(self._resolve_and_fetch(symbol))
+            quote_data = self._loop.run_until_complete(self._resolve_and_fetch(symbol))
             if quote_data is None:
                 return result  # MISSING_DATA: no se encontró contrato activo
             result.update(quote_data)
@@ -104,7 +108,7 @@ class TastyTradeClient:
             Símbolo streamer del front-month, ej. '/ESM6:XCME', o None.
         """
         try:
-            futures = asyncio.run(Future.get(self.session, product_codes=[product_code]))
+            futures = self._loop.run_until_complete(Future.get(self.session, product_codes=[product_code]))
             if not futures:
                 return None
             front = next((f for f in futures if f.active and f.active_month), None)
@@ -140,7 +144,7 @@ class TastyTradeClient:
             Lista vacía si no hay datos para ese vencimiento.
         """
         try:
-            return asyncio.run(
+            return self._loop.run_until_complete(
                 self._fetch_option_chain_async(symbol, expiry, max_strikes, spot)
             )
         except EnvironmentError:
