@@ -759,6 +759,11 @@ class ManciniMonitor:
 
     def run(self) -> None:
         """Loop principal del monitor. Se auto-finaliza a SESSION_END_HOUR ET."""
+        import os
+        from scripts.mancini.health import write_pid, clear_pid, clear_stop_flag, stop_requested
+
+        clear_stop_flag()
+        write_pid(os.getpid())
         _log("Monitor arrancando...")
         self.load_state()
 
@@ -768,6 +773,13 @@ class ManciniMonitor:
         try:
             while True:
                 try:
+                    # Stop limpio vía flag (outputs/mancini_stop)
+                    if stop_requested():
+                        _log("Stop solicitado — cerrando monitor limpiamente")
+                        clear_stop_flag()
+                        self.close_session()
+                        break
+
                     now = _now_et()
 
                     # Auto-finalizar
@@ -828,3 +840,5 @@ class ManciniMonitor:
             notifier.notify_monitor_crash(f"Crash fatal: {e}")
             self.save_state()
             raise
+        finally:
+            clear_pid()
