@@ -402,6 +402,26 @@ def main() -> None:
     p_reset.add_argument("--keep-plan", action="store_true",
                          help="Conservar el plan actual")
 
+    # health
+    sub.add_parser("health", help="Muestra estado de salud del sistema")
+
+    # start-day
+    p_start = sub.add_parser("start-day", help="Inicia la jornada (scan + monitor)")
+    p_start.add_argument("--skip-scan", action="store_true",
+                         help="No ejecutar scan si ya hay plan de hoy")
+    p_start.add_argument("--dry-run", action="store_true",
+                         help="Simular sin lanzar monitor ni modificar estado")
+
+    # stop-day
+    p_stop = sub.add_parser("stop-day", help="Para el monitor limpiamente")
+    p_stop.add_argument("--force", action="store_true",
+                        help="Kill inmediato sin esperar stop flag")
+
+    # recover
+    p_recover = sub.add_parser("recover", help="Detecta y corrige inconsistencias")
+    p_recover.add_argument("--dry-run", action="store_true",
+                           help="Describir acciones sin ejecutarlas")
+
     args = parser.parse_args()
 
     if args.command == "scan":
@@ -416,6 +436,19 @@ def main() -> None:
         cmd_intraday_status(args)
     elif args.command == "reset":
         cmd_reset(args)
+    elif args.command == "health":
+        from scripts.mancini.health import check_health
+        check_health().print_summary()
+    elif args.command == "start-day":
+        from scripts.mancini.health import start_day
+        ok = start_day(skip_scan=args.skip_scan, dry_run=args.dry_run)
+        sys.exit(0 if ok else 1)
+    elif args.command == "stop-day":
+        from scripts.mancini.health import stop_day
+        stop_day(force=args.force)
+    elif args.command == "recover":
+        from scripts.mancini.health import recover
+        recover(dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
