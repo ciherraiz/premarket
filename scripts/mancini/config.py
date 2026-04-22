@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+
 PLAN_PATH = Path("outputs/mancini_plan.json")
 WEEKLY_PLAN_PATH = Path("outputs/mancini_weekly.json")
 INTRADAY_STATE_PATH = Path("outputs/mancini_intraday.json")
@@ -68,8 +69,10 @@ class DailyPlan:
 
     @classmethod
     def from_dict(cls, d: dict) -> DailyPlan:
+        d = dict(d)
         if d.get("chop_zone") is not None:
             d["chop_zone"] = tuple(d["chop_zone"])
+        d.pop("session_mode", None)  # retrocompatibilidad con planes guardados anteriormente
         return cls(**d)
 
 

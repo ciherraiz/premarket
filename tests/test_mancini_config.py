@@ -32,6 +32,25 @@ def test_daily_plan_creation():
     assert plan.updated_at  # auto-filled
 
 
+def test_from_dict_ignores_legacy_session_mode():
+    """Retrocompatibilidad: planes guardados con session_mode se cargan sin error."""
+    d = {
+        "fecha": "2026-04-10",
+        "key_level_upper": 7135,
+        "targets_upper": [7153],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "raw_tweets": [],
+        "chop_zone": None,
+        "session_mode": "RUNNER_ACTIVE",  # campo heredado — debe ignorarse
+        "notes": "",
+        "created_at": "2026-04-10T09:00:00+00:00",
+        "updated_at": "2026-04-10T09:00:00+00:00",
+    }
+    plan = DailyPlan.from_dict(d)
+    assert plan.key_level_upper == 7135  # datos reales intactos
+
+
 def test_daily_plan_with_chop_zone():
     plan = DailyPlan(
         fecha="2026-04-10",

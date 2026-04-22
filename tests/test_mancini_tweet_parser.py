@@ -104,6 +104,21 @@ def test_parse_response_invalid_json():
         _parse_response("esto no es json", "2026-04-10", [])
 
 
+def test_parse_response_notes_extracted():
+    """Las notas del contexto del tweet se preservan en el plan."""
+    response = json.dumps({
+        "key_level_upper": 7135,
+        "targets_upper": [7153],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "notes": "no hay nada que hacer, deja que el runner avance",
+    })
+    plan = _parse_response(response, "2026-04-22", [])
+    assert plan is not None
+    assert "runner" in plan.notes
+
+
 def test_parse_response_raw_tweets_preserved():
     """raw_tweets se preservan correctamente."""
     response = json.dumps({

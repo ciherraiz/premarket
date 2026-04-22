@@ -20,10 +20,13 @@ targets_upper: list[float]  # Objetivos alcistas
 key_level_lower: float   # Nivel fail (sell si rompe)
 targets_lower: list[float]  # Objetivos bajistas
 chop_zone: tuple[float, float] | None  # Rango de consolidación
-notes: str               # Notas / actualizaciones intraday
+notes: str               # resumen/contexto extraído de los tweets
 created_at: str           # ISO timestamp
 updated_at: str           # ISO timestamp última actualización
 ```
+
+**Nota**: el estado operativo de la sesión NO se extrae de tweets — es
+determinista, calculado por el monitor a partir del precio vs. niveles.
 
 Persistencia: `outputs/mancini_plan.json` (sobrescrito por scan de tweets).
 
@@ -107,8 +110,45 @@ Proceso Python de larga duración. Cada 60 segundos:
 
 ### 5. notifier.py — Alertas Telegram
 
-6 tipos: plan escaneado, plan cargado, breakdown detectado,
-señal de entrada, target alcanzado, trade cerrado.
+7 tipos: plan cargado, approaching level, breakdown detectado,
+señal de entrada, target alcanzado, trade cerrado, resumen sesión.
+
+**Formato notify_plan_loaded** (con contexto determinista):
+```
+🎯 Mancini Plan | YYYY-MM-DD
+
+🟢 Upper: 7135.0 → 7153.0, 7165.0, 7180.0
+🔴 Lower: 7120.0 →
+
+📊 ES: 7151.00 | +31.0 pts sobre nivel inferior
+⏳ En standby — precio lejos del nivel, sin setup posible
+
+💬 resumen del contexto extraído de los tweets
+
+📡 Monitor activo 03:00-16:00 ET   ← solo si llamada desde monitor
+```
+El texto de contexto es determinista: si precio > nivel + 15 pts → "en standby";
+si precio dentro de 15 pts → "zona de alerta"; si precio bajo nivel → "detector activo".
+
+**notify_approaching_level**: alerta automática cuando el precio entra
+en zona de alerta (transición STANDBY → ALERT_ZONE en el monitor).
+
+### 5b. monitor.py — Sistema de contexto determinista
+
+```python
+CONTEXT_ALERT_PTS = 15   # pts sobre nivel para definir zona de alerta
+
+def compute_level_context(price, level, detector_state) -> str:
+    # Si el detector está activo (BREAKDOWN/RECOVERY/SIGNAL/ACTIVE) → retorna su estado
+    # Si WATCHING y precio > nivel + CONTEXT_ALERT_PTS → "STANDBY"
+    # Si WATCHING y precio dentro de CONTEXT_ALERT_PTS → "ALERT_ZONE"
+```
+
+El monitor trackea `_level_contexts: dict[float, str]` por nivel.
+En cada tick detecta cambios de contexto y:
+- Loggea la transición con distancia al nivel
+- Envía `notify_approaching_level` solo en la transición STANDBY → ALERT_ZONE
+(no spamea en cada tick)
 
 Reutiliza `send_telegram()` y `_esc()` de `scripts/notify_telegram.py`.
 

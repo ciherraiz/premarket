@@ -73,6 +73,105 @@ def test_notify_plan_loaded_no_chop(mock_telegram):
     assert "Chop zone" not in msg
 
 
+def test_notify_plan_loaded_standby_context(mock_telegram):
+    """Precio lejos del nivel muestra mensaje de standby."""
+    plan = {
+        "fecha": "2026-04-22",
+        "key_level_upper": 7135,
+        "targets_upper": [7153, 7165, 7180],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "notes": "",
+    }
+    result = notifier.notify_plan_loaded(plan, price=7151.0)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "7151" in msg
+    assert "standby" in msg.lower()
+    assert "+31" in msg
+
+
+def test_notify_plan_loaded_alert_zone_context(mock_telegram):
+    """Precio cerca del nivel muestra mensaje de alerta."""
+    plan = {
+        "fecha": "2026-04-22",
+        "key_level_upper": 7135,
+        "targets_upper": [7153],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "notes": "",
+    }
+    result = notifier.notify_plan_loaded(plan, price=7124.0)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "alerta" in msg.lower()
+    assert "+4" in msg
+
+
+def test_notify_plan_loaded_no_price_no_context_line(mock_telegram):
+    """Sin precio no aparece línea de contexto."""
+    plan = {
+        "fecha": "2026-04-22",
+        "key_level_upper": 7135,
+        "targets_upper": [7153],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "notes": "",
+    }
+    result = notifier.notify_plan_loaded(plan)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "standby" not in msg.lower()
+    assert "alerta" not in msg.lower()
+
+
+def test_notify_plan_loaded_notes_shown(mock_telegram):
+    """Las notas aparecen en el mensaje cuando no están vacías."""
+    plan = {
+        "fecha": "2026-04-22",
+        "key_level_upper": 7135,
+        "targets_upper": [7153],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "notes": "contexto importante del día",
+    }
+    result = notifier.notify_plan_loaded(plan)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "contexto importante" in msg
+
+
+def test_notify_plan_loaded_no_notes_no_notes_line(mock_telegram):
+    """Sin notas no aparece la línea de notas."""
+    plan = {
+        "fecha": "2026-04-22",
+        "key_level_upper": 7135,
+        "targets_upper": [7153],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "notes": "",
+    }
+    result = notifier.notify_plan_loaded(plan)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "💬" not in msg
+
+
+def test_notify_approaching_level(mock_telegram):
+    """Alerta de zona de alerta incluye nivel y distancia."""
+    result = notifier.notify_approaching_level(7120.0, 7124.0, 4.0)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "7120" in msg
+    assert "7124" in msg
+    assert "alerta" in msg.lower()
+
+
 def test_notify_breakdown(mock_telegram):
     result = notifier.notify_breakdown(6781, 6776, 5.0)
     assert result is True
