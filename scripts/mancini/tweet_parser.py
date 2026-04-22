@@ -14,7 +14,7 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 from pathlib import Path
 
-from scripts.mancini.config import DailyPlan
+from scripts.mancini.config import DailyPlan, SessionMode
 
 # Buscar .env en la raíz del proyecto (funciona desde worktrees y subcarpetas)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -39,8 +39,18 @@ Responde SOLO con JSON válido (sin markdown, sin explicaciones):
   "key_level_lower": 6781,
   "targets_lower": [6766],
   "chop_zone": [6788, 6830],
+  "session_mode": "FRESH_SETUP",
   "notes": "breve resumen de contexto"
 }
+
+## Valores de session_mode
+
+- "FRESH_SETUP"    → hay niveles nuevos accionables para hoy
+- "RUNNER_ACTIVE"  → Mancini ya está en una posición y deja correr el runner;
+                     menciona "runner", "ride runner", "nothing to do", "let it run"
+- "WAIT_PULLBACK"  → espera retroceso a un nivel antes de buscar entrada;
+                     menciona "wait for dip", "pullback to X", "if we dip to X"
+- "NO_SETUP"       → no hay setup accionable hoy
 
 ## Reglas de extracción
 
@@ -76,6 +86,7 @@ runners, comentarios de volatilidad sin niveles nuevos), responde:
   "key_level_lower": null,
   "targets_lower": [],
   "chop_zone": null,
+  "session_mode": "NO_SETUP",
   "notes": "descripción de por qué no hay plan"
 }
 
@@ -189,6 +200,12 @@ def _parse_response(
     upper = data.get("key_level_upper")
     lower = data.get("key_level_lower")
 
+    raw_mode = data.get("session_mode", "FRESH_SETUP")
+    try:
+        session_mode = SessionMode(raw_mode)
+    except ValueError:
+        session_mode = SessionMode.FRESH_SETUP
+
     return DailyPlan(
         fecha=fecha,
         key_level_upper=float(upper) if upper is not None else None,
@@ -197,6 +214,7 @@ def _parse_response(
         targets_lower=[float(t) for t in data.get("targets_lower", [])],
         raw_tweets=raw_tweets,
         chop_zone=chop,
+        session_mode=session_mode,
         notes=data.get("notes", ""),
     )
 

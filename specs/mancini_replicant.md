@@ -11,6 +11,14 @@ detecta patrones de failed breakdown, y propone trades con gestión de riesgo.
 
 ### 1. config.py — Modelo de datos
 
+**SessionMode** (enum):
+```
+FRESH_SETUP    # niveles nuevos, buscar entrada al producirse el patrón
+RUNNER_ACTIVE  # posición ya abierta corriendo, no buscar entrada nueva
+WAIT_PULLBACK  # esperar retroceso a un nivel para buscar failed breakdown
+NO_SETUP       # sin setup accionable hoy
+```
+
 **DailyPlan** (dataclass):
 ```
 fecha: str               # YYYY-MM-DD
@@ -20,7 +28,8 @@ targets_upper: list[float]  # Objetivos alcistas
 key_level_lower: float   # Nivel fail (sell si rompe)
 targets_lower: list[float]  # Objetivos bajistas
 chop_zone: tuple[float, float] | None  # Rango de consolidación
-notes: str               # Notas / actualizaciones intraday
+session_mode: SessionMode  # estado operativo de la sesión
+notes: str               # resumen/contexto extraído de los tweets
 created_at: str           # ISO timestamp
 updated_at: str           # ISO timestamp última actualización
 ```
@@ -110,6 +119,25 @@ Proceso Python de larga duración. Cada 60 segundos:
 6 tipos: plan escaneado, plan cargado, breakdown detectado,
 señal de entrada, target alcanzado, trade cerrado.
 
+**Formato notify_plan_loaded** (mejorado):
+```
+🎯 Mancini Plan | YYYY-MM-DD
+
+📊 Modo: RUNNER ACTIVO — dejar correr, no buscar entrada nueva
+
+🟢 Upper: 7135.0 → 7153.0, 7165.0, 7180.0
+🔴 Setup pendiente: 7120.0 → retroceso para failed breakdown
+
+💬 "resumen del contexto extraído de los tweets"
+
+📡 Monitor activo 03:00-16:00 ET   ← solo si llamada desde monitor
+```
+El `session_mode` determina el texto del modo y el icono del nivel inferior:
+- `FRESH_SETUP`: sin línea de modo, formato estándar
+- `RUNNER_ACTIVE`: "dejar correr, no buscar entrada nueva"
+- `WAIT_PULLBACK`: nivel lower se muestra como "Setup pendiente"
+- `NO_SETUP`: "sin setup accionable hoy"
+
 Reutiliza `send_telegram()` y `_esc()` de `scripts/notify_telegram.py`.
 
 ### 6. logger.py — Registro JSONL
@@ -149,6 +177,12 @@ las **16:00 ET del día anterior** hasta el momento actual. Esto cubre:
 - Tweets intraday del día actual
 
 Ver `specs/mancini_realtime_tweets.md` para detalle de la migración de UserTweets a SearchTimeline.
+
+**tweet_parser.py** — extrae niveles y modo de sesión vía Claude Haiku:
+- El JSON de salida incluye `session_mode` además de niveles y notas
+- Reglas de detección: "runner"/"nothing to do" → `RUNNER_ACTIVE`;
+  "wait for pullback"/"dip to X" → `WAIT_PULLBACK`;
+  niveles nuevos accionables → `FRESH_SETUP`; sin niveles → `NO_SETUP`
 
 **tweet_parser.py** — extrae niveles estructurados vía Claude Haiku:
 1. Construye prompt con convenciones de notación de Mancini

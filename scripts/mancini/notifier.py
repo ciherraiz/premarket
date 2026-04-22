@@ -28,25 +28,49 @@ def notify_plan_loaded(plan: dict,
     lower = _esc(plan.get("key_level_lower", "N/A"))
     targets_up = ", ".join(_esc(str(t)) for t in plan.get("targets_upper", []))
     targets_down = ", ".join(_esc(str(t)) for t in plan.get("targets_lower", []))
+    session_mode = plan.get("session_mode", "FRESH_SETUP")
+    notes = plan.get("notes", "")
 
     chop = plan.get("chop_zone")
-    chop_line = ""
-    if chop:
-        chop_line = f"\n🔄 *Chop zone:* {_esc(chop[0])} \\- {_esc(chop[1])}"
+    chop_line = f"\n🔄 *Chop zone:* {_esc(chop[0])} \\- {_esc(chop[1])}" if chop else ""
+
+    _MODE_LABELS = {
+        "RUNNER_ACTIVE": "🏃 *Modo:* Runner activo — no buscar entrada nueva",
+        "WAIT_PULLBACK": "⏳ *Modo:* Esperando retroceso — sin entrada hasta reclaim",
+        "NO_SETUP":      "⛔ *Modo:* Sin setup accionable hoy",
+    }
+    mode_line = _MODE_LABELS.get(session_mode, "")
+
+    # El nivel inferior se muestra diferente según el modo
+    if session_mode == "WAIT_PULLBACK" and lower != "N/A":
+        lower_line = f"🔴 *Setup pendiente:* {lower} → retroceso para failed breakdown"
+    elif session_mode == "RUNNER_ACTIVE":
+        lower_line = f"🔴 *Lower \\(referencia\\):* {lower}"
+    else:
+        lower_line = f"🔴 *Lower:* {lower} → {targets_down}"
 
     lines = [
         f"🎯 *Mancini Plan \\| {fecha}*",
         "",
+    ]
+
+    if mode_line:
+        lines += [mode_line, ""]
+
+    lines += [
         f"🟢 *Upper:* {upper} → {targets_up}",
-        f"🔴 *Lower:* {lower} → {targets_down}",
+        lower_line,
         chop_line,
     ]
 
+    if notes:
+        lines += ["", f'💬 {_esc(notes)}']
+
     if session_start is not None and session_end is not None:
-        lines.append("")
-        lines.append(
-            f"📡 Monitor activo {session_start:02d}:00\\-{session_end:02d}:00 ET"
-        )
+        lines += [
+            "",
+            f"📡 Monitor activo {session_start:02d}:00\\-{session_end:02d}:00 ET",
+        ]
 
     msg = "\n".join(lines)
     return send_telegram(msg.strip())

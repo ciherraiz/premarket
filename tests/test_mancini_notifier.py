@@ -73,6 +73,82 @@ def test_notify_plan_loaded_no_chop(mock_telegram):
     assert "Chop zone" not in msg
 
 
+def test_notify_plan_loaded_runner_active(mock_telegram):
+    """session_mode RUNNER_ACTIVE muestra línea de modo y no targets del lower."""
+    plan = {
+        "fecha": "2026-04-22",
+        "key_level_upper": 7135,
+        "targets_upper": [7153, 7165, 7180],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "session_mode": "RUNNER_ACTIVE",
+        "notes": "no hay nada que hacer, deja que el runner avance",
+    }
+    result = notifier.notify_plan_loaded(plan)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "Runner activo" in msg
+    assert "no buscar entrada nueva" in msg
+    assert "no hay nada que hacer" in msg
+
+
+def test_notify_plan_loaded_wait_pullback(mock_telegram):
+    """session_mode WAIT_PULLBACK muestra nivel lower como setup pendiente."""
+    plan = {
+        "fecha": "2026-04-22",
+        "key_level_upper": 7135,
+        "targets_upper": [7153],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "session_mode": "WAIT_PULLBACK",
+        "notes": "",
+    }
+    result = notifier.notify_plan_loaded(plan)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "Setup pendiente" in msg
+    assert "retroceso" in msg
+    assert "7120" in msg
+
+
+def test_notify_plan_loaded_notes_shown(mock_telegram):
+    """Las notas aparecen en el mensaje cuando no están vacías."""
+    plan = {
+        "fecha": "2026-04-22",
+        "key_level_upper": 7135,
+        "targets_upper": [7153],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "session_mode": "FRESH_SETUP",
+        "notes": "contexto importante del día",
+    }
+    result = notifier.notify_plan_loaded(plan)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "contexto importante" in msg
+
+
+def test_notify_plan_loaded_no_notes_no_notes_line(mock_telegram):
+    """Sin notas no aparece la línea de notas."""
+    plan = {
+        "fecha": "2026-04-22",
+        "key_level_upper": 7135,
+        "targets_upper": [7153],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "session_mode": "FRESH_SETUP",
+        "notes": "",
+    }
+    result = notifier.notify_plan_loaded(plan)
+    assert result is True
+    msg = mock_telegram.call_args[0][0]
+    assert "💬" not in msg
+
+
 def test_notify_breakdown(mock_telegram):
     result = notifier.notify_breakdown(6781, 6776, 5.0)
     assert result is True

@@ -15,6 +15,7 @@ from scripts.mancini.tweet_parser import (
     _build_user_message,
     _parse_response,
 )
+from scripts.mancini.config import SessionMode
 
 
 # ── _build_user_message ───────────────────────────────────────────────
@@ -102,6 +103,69 @@ def test_parse_response_invalid_json():
     """JSON inválido lanza ValueError."""
     with pytest.raises(ValueError, match="JSON inválido"):
         _parse_response("esto no es json", "2026-04-10", [])
+
+
+def test_parse_response_session_mode_runner_active():
+    """session_mode RUNNER_ACTIVE se parsea correctamente."""
+    response = json.dumps({
+        "key_level_upper": 7135,
+        "targets_upper": [7153, 7165],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "session_mode": "RUNNER_ACTIVE",
+        "notes": "no hay nada que hacer, deja que el runner avance",
+    })
+    plan = _parse_response(response, "2026-04-22", [])
+    assert plan is not None
+    assert plan.session_mode == SessionMode.RUNNER_ACTIVE
+
+
+def test_parse_response_session_mode_wait_pullback():
+    """session_mode WAIT_PULLBACK se parsea correctamente."""
+    response = json.dumps({
+        "key_level_upper": 7135,
+        "targets_upper": [7153],
+        "key_level_lower": 7120,
+        "targets_lower": [],
+        "chop_zone": None,
+        "session_mode": "WAIT_PULLBACK",
+        "notes": "",
+    })
+    plan = _parse_response(response, "2026-04-22", [])
+    assert plan is not None
+    assert plan.session_mode == SessionMode.WAIT_PULLBACK
+
+
+def test_parse_response_missing_session_mode_defaults_fresh_setup():
+    """Sin session_mode en el JSON → FRESH_SETUP por defecto."""
+    response = json.dumps({
+        "key_level_upper": 6809,
+        "targets_upper": [6819],
+        "key_level_lower": 6781,
+        "targets_lower": [6766],
+        "chop_zone": None,
+        "notes": "",
+    })
+    plan = _parse_response(response, "2026-04-10", [])
+    assert plan is not None
+    assert plan.session_mode == SessionMode.FRESH_SETUP
+
+
+def test_parse_response_invalid_session_mode_defaults_fresh_setup():
+    """session_mode con valor desconocido → FRESH_SETUP por defecto."""
+    response = json.dumps({
+        "key_level_upper": 6809,
+        "targets_upper": [6819],
+        "key_level_lower": 6781,
+        "targets_lower": [6766],
+        "chop_zone": None,
+        "session_mode": "UNKNOWN_MODE",
+        "notes": "",
+    })
+    plan = _parse_response(response, "2026-04-10", [])
+    assert plan is not None
+    assert plan.session_mode == SessionMode.FRESH_SETUP
 
 
 def test_parse_response_raw_tweets_preserved():
