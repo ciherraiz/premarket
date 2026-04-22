@@ -419,8 +419,8 @@ def start_day(skip_scan: bool = False, dry_run: bool = False) -> bool:
     Inicia la jornada Mancini de forma determinista e idempotente.
 
     Flujo:
-    1. Si el monitor ya corre y está sano → no hacer nada
-    2. Matar procesos huérfanos
+    1. Matar procesos huérfanos SIEMPRE (no acumular instancias extra)
+    2. Si el monitor oficial ya corre → salir sin lanzar un segundo
     3. Limpiar estado del día anterior
     4. Scan de tweets para obtener plan de hoy
     5. Lanzar monitor como proceso detached
@@ -434,19 +434,20 @@ def start_day(skip_scan: bool = False, dry_run: bool = False) -> bool:
 
     print("=== Mancini start-day ===\n")
 
-    # 1. Idempotencia
+    # 1. Matar huérfanos SIEMPRE — independientemente del estado del monitor oficial
+    orphans = kill_orphans()
+    if orphans:
+        print(f"  Procesos huérfanos eliminados: {orphans}")
+
+    # 2. Idempotencia: si el monitor oficial ya corre, no lanzar un segundo
     if is_monitor_running():
         health = check_health()
         if health.overall_ok:
             print("Monitor ya está corriendo y sano. Sin cambios.")
-            health.print_summary()
-            return True
-        print("Monitor corre pero con problemas — continuando con recovery...")
-
-    # 2. Matar huérfanos
-    orphans = kill_orphans()
-    if orphans:
-        print(f"  Procesos huérfanos eliminados: {orphans}")
+        else:
+            print("Monitor corriendo pero con problemas (quote lenta o plan pendiente) — sin relanzar.")
+        health.print_summary()
+        return health.monitor_running
 
     # 3. Limpiar estado del día anterior
     print("  Limpiando estado anterior...")
