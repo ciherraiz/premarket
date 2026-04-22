@@ -56,6 +56,22 @@ uv run python scripts/run.py
 
 Esto ejecuta en secuencia: fetch → calcular indicadores → imprimir scorecard.
 
+## Sistema Mancini — Arranque y gestión de procesos
+
+**CRÍTICO**: Nunca arrancar ni matar procesos del monitor manualmente con Python/taskkill.
+Usar siempre los `.bat` de `scripts/mancini/` — gestionan PID file y huérfanos.
+
+| Acción | Comando |
+|--------|---------|
+| Arrancar/reiniciar monitor | `scripts\mancini\monitor_start.bat` → llama a `run_mancini.py start-day` (idempotente: mata huérfanos, arranca uno limpio) |
+| Scan tweets (lunes–viernes) | `scripts\mancini\scan_start.bat` |
+| Scan domingo (weekly) | `scripts\mancini\monitor_sunday.bat` / `scan_sunday.bat` |
+
+El subcomando `start-day` es **idempotente**: si ya hay un monitor corriendo lo mata y arranca uno nuevo.
+No ejecutar `run_mancini.py monitor` directamente — bypasea la gestión de PID y crea instancias huérfanas.
+
+Para reiniciar el monitor tras un deploy: ejecutar `monitor_start.bat`. Nada más.
+
 ## Convenciones
 - Iterar siempre sobre `specs/` antes de modificar código
 - Los outputs en `outputs/` se sobreescriben cada ejecución
@@ -69,6 +85,19 @@ Esto ejecuta en secuencia: fetch → calcular indicadores → imprimir scorecard
 - Rama principal: main
 - Commits en español, formato convencional: `feat:`, `fix:`, `chore:`
 - Cada funcionalidad nueva pasa por `specs/` antes de implementarse
+
+**CRÍTICO — flujo de ramas:**
+1. Crear siempre una rama nueva desde main antes de tocar código
+2. Hacer commits en esa rama
+3. Crear PR desde esa rama hacia main
+4. Nunca commitear directamente en main
+
+```bash
+git checkout main && git pull
+git checkout -b feat/nombre-descriptivo
+# ... cambios, commits ...
+gh pr create
+```
 
 ## Estado actual
 - [X] Paso 1: estructura creada
