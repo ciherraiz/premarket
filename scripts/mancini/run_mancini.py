@@ -272,6 +272,10 @@ def cmd_monitor(args) -> None:
 
 def cmd_status(args) -> None:
     """Muestra el estado actual del sistema."""
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     # Plan
     plan = load_plan()
     if plan:
@@ -311,6 +315,10 @@ def cmd_status(args) -> None:
 
 def cmd_intraday_status(args) -> None:
     """Muestra el estado del clasificador intraday."""
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     state = load_intraday_state()
 
     print(f"📡 Intraday Classifier Status")
