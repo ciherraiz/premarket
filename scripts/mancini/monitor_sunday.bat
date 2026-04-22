@@ -9,6 +9,7 @@ title Mancini Monitor /ES (Domingo)
 cd /d "C:\Users\ciher\Documents\Development\premarket"
 
 set PATH=C:\Users\ciher\.cargo\bin;%PATH%
+set PYTHONUTF8=1
 
 echo [%date% %time%] Arrancando monitor Mancini domingo... >> logs\mancini_monitor.log
 
