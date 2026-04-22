@@ -450,7 +450,7 @@ def test_scan_for_plan_respects_session_end(plan_path, state_path, weekly_path):
 @patch("scripts.mancini.tweet_fetcher.fetch_mancini_tweets")
 def test_scan_for_plan_fetches_tweets(mock_fetch, mock_parse,
                                        plan_path, state_path, weekly_path,
-                                       mock_notifier):
+                                       mock_notifier, tmp_path):
     """_scan_for_plan hace fetch + parse cuando no hay plan en disco."""
     mock_fetch.return_value = [
         {"id": "t1", "text": "ES 7058 reclaims, see 7103, 7116", "created_at": "2026-04-10T08:00:00-04:00"},
@@ -464,8 +464,10 @@ def test_scan_for_plan_fetches_tweets(mock_fetch, mock_parse,
         raw_tweets=["ES 7058 reclaims, see 7103, 7116"],
     )
 
+    intraday_path = tmp_path / "mancini_intraday.json"
     m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
-                       weekly_path=weekly_path, poll_interval=0, gate_enabled=False)
+                       weekly_path=weekly_path, intraday_path=intraday_path,
+                       poll_interval=0, gate_enabled=False)
 
     with patch("scripts.mancini.monitor._now_et",
                return_value=datetime(2026, 4, 10, 9, 30, 0, tzinfo=ET)):
