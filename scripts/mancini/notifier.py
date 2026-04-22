@@ -16,52 +16,47 @@ from scripts.notify_telegram import send_telegram, send_telegram_photo, _esc
 
 
 def notify_plan_loaded(plan: dict,
+                       price: float | None = None,
                        session_start: int | None = None,
                        session_end: int | None = None) -> bool:
     """Alerta: plan del día cargado con niveles extraídos.
 
-    Si session_start/session_end se proporcionan (llamada desde monitor),
-    incluye la línea de ventana de monitor. Si no (llamada desde scan), la omite.
+    Si price se proporciona, muestra el contexto operativo actual
+    (distancia al nivel inferior y si hay setup posible).
+    Si session_start/session_end se proporcionan, incluye la línea de monitor.
     """
     fecha = _esc(plan.get("fecha", "N/A"))
     upper = _esc(plan.get("key_level_upper", "N/A"))
-    lower = _esc(plan.get("key_level_lower", "N/A"))
+    lower_val = plan.get("key_level_lower")
+    lower = _esc(lower_val) if lower_val is not None else "N/A"
     targets_up = ", ".join(_esc(str(t)) for t in plan.get("targets_upper", []))
     targets_down = ", ".join(_esc(str(t)) for t in plan.get("targets_lower", []))
-    session_mode = plan.get("session_mode", "FRESH_SETUP")
     notes = plan.get("notes", "")
 
     chop = plan.get("chop_zone")
-    chop_line = f"\n🔄 *Chop zone:* {_esc(chop[0])} \\- {_esc(chop[1])}" if chop else ""
-
-    _MODE_LABELS = {
-        "RUNNER_ACTIVE": "🏃 *Modo:* Runner activo — no buscar entrada nueva",
-        "WAIT_PULLBACK": "⏳ *Modo:* Esperando retroceso — sin entrada hasta reclaim",
-        "NO_SETUP":      "⛔ *Modo:* Sin setup accionable hoy",
-    }
-    mode_line = _MODE_LABELS.get(session_mode, "")
-
-    # El nivel inferior se muestra diferente según el modo
-    if session_mode == "WAIT_PULLBACK" and lower != "N/A":
-        lower_line = f"🔴 *Setup pendiente:* {lower} → retroceso para failed breakdown"
-    elif session_mode == "RUNNER_ACTIVE":
-        lower_line = f"🔴 *Lower \\(referencia\\):* {lower}"
-    else:
-        lower_line = f"🔴 *Lower:* {lower} → {targets_down}"
+    chop_line = f"🔄 *Chop zone:* {_esc(chop[0])} \\- {_esc(chop[1])}" if chop else ""
 
     lines = [
         f"🎯 *Mancini Plan \\| {fecha}*",
         "",
-    ]
-
-    if mode_line:
-        lines += [mode_line, ""]
-
-    lines += [
         f"🟢 *Upper:* {upper} → {targets_up}",
-        lower_line,
-        chop_line,
+        f"🔴 *Lower:* {lower} → {targets_down}",
     ]
+
+    if chop_line:
+        lines.append(chop_line)
+
+    # Contexto determinista basado en precio actual
+    if price is not None and lower_val is not None:
+        dist = price - lower_val
+        lines.append("")
+        lines.append(f"📊 *ES:* {_esc(f'{price:.2f}')} \\| {_esc(f'{dist:+.1f}')} pts sobre nivel inferior")
+        if dist > 15:
+            lines.append("⏳ En standby — precio lejos del nivel, sin setup posible")
+        elif dist > 0:
+            lines.append("👀 Zona de alerta — precio próximo al nivel, vigilar breakdown")
+        else:
+            lines.append("⚠️ Precio bajo el nivel — detector activo")
 
     if notes:
         lines += ["", f'💬 {_esc(notes)}']
@@ -74,6 +69,19 @@ def notify_plan_loaded(plan: dict,
 
     msg = "\n".join(lines)
     return send_telegram(msg.strip())
+
+
+def notify_approaching_level(level: float, price: float, distance: float) -> bool:
+    """Alerta: precio entrando en zona de alerta del nivel clave."""
+    msg = "\n".join([
+        "👀 *Zona de alerta*",
+        "",
+        f"📍 Nivel: {_esc(level)}",
+        f"📊 ES: {_esc(f'{price:.2f}')} \\({_esc(f'{distance:+.1f}')} pts\\)",
+        "",
+        "Precio próximo al nivel — vigilar posible breakdown\\.",
+    ])
+    return send_telegram(msg)
 
 
 def notify_breakdown(level: float, price: float, depth: float) -> bool:

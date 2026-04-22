@@ -15,7 +15,7 @@ import pytest
 from scripts.mancini.config import DailyPlan, save_plan, save_weekly
 from scripts.mancini.detector import State, save_detectors, FailedBreakdownDetector
 from scripts.mancini.trade_manager import TradeStatus
-from scripts.mancini.monitor import ManciniMonitor, ET
+from scripts.mancini.monitor import ManciniMonitor, ET, compute_level_context, CONTEXT_ALERT_PTS
 
 
 @pytest.fixture
@@ -477,3 +477,67 @@ def test_scan_for_plan_fetches_tweets(mock_fetch, mock_parse,
     # Tweet marcado como procesado para que el clasificador no lo re-procese
     assert "t1" in m.intraday_state.processed_tweet_ids
     mock_notifier.notify_plan_loaded.assert_called_once()
+
+
+# ── compute_level_context ────────────────────────────────────────────
+
+def test_context_standby_far_above_level():
+    """Precio muy por encima del nivel → STANDBY."""
+    ctx = compute_level_context(7151.0, 7120.0, State.WATCHING)
+    assert ctx == "STANDBY"
+
+
+def test_context_alert_zone_near_level():
+    """Precio dentro de CONTEXT_ALERT_PTS → ALERT_ZONE."""
+    ctx = compute_level_context(7124.0, 7120.0, State.WATCHING)
+    assert ctx == "ALERT_ZONE"
+
+
+def test_context_alert_zone_exactly_at_threshold():
+    """Precio exactamente en el umbral (nivel + CONTEXT_ALERT_PTS) → ALERT_ZONE."""
+    ctx = compute_level_context(7120.0 + CONTEXT_ALERT_PTS, 7120.0, State.WATCHING)
+    assert ctx == "ALERT_ZONE"
+
+
+def test_context_just_above_threshold_is_standby():
+    """Un punto sobre el umbral → STANDBY."""
+    ctx = compute_level_context(7120.0 + CONTEXT_ALERT_PTS + 1, 7120.0, State.WATCHING)
+    assert ctx == "STANDBY"
+
+
+def test_context_below_level():
+    """Precio bajo el nivel (sin activar detector) → BELOW_LEVEL."""
+    ctx = compute_level_context(7118.0, 7120.0, State.WATCHING)
+    assert ctx == "BELOW_LEVEL"
+
+
+def test_context_delegates_to_detector_state():
+    """Si el detector no está en WATCHING, retorna el valor del estado."""
+    assert compute_level_context(7118.0, 7120.0, State.BREAKDOWN) == "BREAKDOWN"
+    assert compute_level_context(7122.0, 7120.0, State.RECOVERY) == "RECOVERY"
+    assert compute_level_context(7122.0, 7120.0, State.SIGNAL) == "SIGNAL"
+    assert compute_level_context(7122.0, 7120.0, State.ACTIVE) == "ACTIVE"
+
+
+def test_approaching_alert_fires_on_standby_to_alert(mock_notifier, sample_plan, state_path, plan_path, weekly_path):
+    """El monitor envía notify_approaching_level al entrar en ALERT_ZONE desde STANDBY."""
+    monitor = ManciniMonitor(
+        client=None,
+        plan_path=plan_path,
+        state_path=state_path,
+        weekly_path=weekly_path,
+        poll_interval=0,
+        gate_enabled=False,
+    )
+    monitor.plan = sample_plan
+    monitor._init_detectors()
+
+    level = sample_plan.key_level_lower  # 6781
+
+    # Primer tick: precio lejos → STANDBY (no alerta)
+    monitor.process_tick(level + CONTEXT_ALERT_PTS + 5)
+    mock_notifier.notify_approaching_level.assert_not_called()
+
+    # Segundo tick: precio entra en ALERT_ZONE → alerta
+    monitor.process_tick(level + CONTEXT_ALERT_PTS - 1)
+    mock_notifier.notify_approaching_level.assert_called_once()

@@ -10,14 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
-
-class SessionMode(str, Enum):
-    FRESH_SETUP   = "FRESH_SETUP"    # niveles nuevos, buscar entrada al producirse el patrón
-    RUNNER_ACTIVE = "RUNNER_ACTIVE"  # posición corriendo, no buscar entrada nueva
-    WAIT_PULLBACK = "WAIT_PULLBACK"  # esperar retroceso al nivel antes de entrar
-    NO_SETUP      = "NO_SETUP"       # sin setup accionable
 
 
 PLAN_PATH = Path("outputs/mancini_plan.json")
@@ -36,7 +29,6 @@ class DailyPlan:
     targets_lower: list[float]
     raw_tweets: list[str] = field(default_factory=list)
     chop_zone: tuple[float, float] | None = None
-    session_mode: SessionMode = SessionMode.FRESH_SETUP
     notes: str = ""
     created_at: str = ""
     updated_at: str = ""
@@ -51,8 +43,7 @@ class DailyPlan:
     def merge_update(self, new_targets_upper: list[float] | None = None,
                      new_targets_lower: list[float] | None = None,
                      new_tweet: str | None = None,
-                     notes: str | None = None,
-                     session_mode: SessionMode | None = None) -> None:
+                     notes: str | None = None) -> None:
         """Incorpora actualizaciones intraday sin perder datos existentes."""
         if new_targets_upper:
             for t in new_targets_upper:
@@ -68,15 +59,12 @@ class DailyPlan:
             self.raw_tweets.append(new_tweet)
         if notes:
             self.notes = f"{self.notes}\n{notes}".strip() if self.notes else notes
-        if session_mode is not None:
-            self.session_mode = session_mode
         self.updated_at = datetime.now(timezone.utc).isoformat()
 
     def to_dict(self) -> dict:
         d = asdict(self)
         if d["chop_zone"] is not None:
             d["chop_zone"] = list(d["chop_zone"])
-        d["session_mode"] = self.session_mode.value
         return d
 
     @classmethod
@@ -84,7 +72,7 @@ class DailyPlan:
         d = dict(d)
         if d.get("chop_zone") is not None:
             d["chop_zone"] = tuple(d["chop_zone"])
-        d["session_mode"] = SessionMode(d.get("session_mode", SessionMode.FRESH_SETUP.value))
+        d.pop("session_mode", None)  # retrocompatibilidad con planes guardados anteriormente
         return cls(**d)
 
 

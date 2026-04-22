@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from scripts.mancini.config import DailyPlan, SessionMode, save_plan, load_plan, save_weekly, load_weekly
+from scripts.mancini.config import DailyPlan, save_plan, load_plan, save_weekly, load_weekly
 
 
 # ── DailyPlan basics ────────────────────────────────────────────────
@@ -28,73 +28,12 @@ def test_daily_plan_creation():
     assert plan.key_level_lower == 6781
     assert plan.targets_lower == [6766]
     assert plan.chop_zone is None
-    assert plan.session_mode == SessionMode.FRESH_SETUP  # valor por defecto
     assert plan.created_at  # auto-filled
     assert plan.updated_at  # auto-filled
 
 
-# ── SessionMode ─────────────────────────────────────────────────────
-
-def test_session_mode_values():
-    assert SessionMode.FRESH_SETUP.value == "FRESH_SETUP"
-    assert SessionMode.RUNNER_ACTIVE.value == "RUNNER_ACTIVE"
-    assert SessionMode.WAIT_PULLBACK.value == "WAIT_PULLBACK"
-    assert SessionMode.NO_SETUP.value == "NO_SETUP"
-
-
-def test_daily_plan_session_mode_runner_active():
-    plan = DailyPlan(
-        fecha="2026-04-10",
-        key_level_upper=7135,
-        targets_upper=[7153, 7165],
-        key_level_lower=7120,
-        targets_lower=[],
-        session_mode=SessionMode.RUNNER_ACTIVE,
-    )
-    assert plan.session_mode == SessionMode.RUNNER_ACTIVE
-
-
-def test_merge_update_session_mode():
-    plan = DailyPlan(
-        fecha="2026-04-10",
-        key_level_upper=7135,
-        targets_upper=[7153],
-        key_level_lower=7120,
-        targets_lower=[],
-        session_mode=SessionMode.FRESH_SETUP,
-    )
-    plan.merge_update(session_mode=SessionMode.WAIT_PULLBACK)
-    assert plan.session_mode == SessionMode.WAIT_PULLBACK
-
-
-def test_to_dict_session_mode_serialized_as_string():
-    plan = DailyPlan(
-        fecha="2026-04-10",
-        key_level_upper=7135,
-        targets_upper=[7153],
-        key_level_lower=7120,
-        targets_lower=[],
-        session_mode=SessionMode.RUNNER_ACTIVE,
-    )
-    d = plan.to_dict()
-    assert d["session_mode"] == "RUNNER_ACTIVE"
-
-
-def test_from_dict_session_mode_deserialized():
-    plan = DailyPlan(
-        fecha="2026-04-10",
-        key_level_upper=7135,
-        targets_upper=[7153],
-        key_level_lower=7120,
-        targets_lower=[],
-        session_mode=SessionMode.WAIT_PULLBACK,
-    )
-    restored = DailyPlan.from_dict(plan.to_dict())
-    assert restored.session_mode == SessionMode.WAIT_PULLBACK
-
-
-def test_from_dict_missing_session_mode_defaults_to_fresh_setup():
-    """Planes guardados antes de este campo cargan con FRESH_SETUP."""
+def test_from_dict_ignores_legacy_session_mode():
+    """Retrocompatibilidad: planes guardados con session_mode se cargan sin error."""
     d = {
         "fecha": "2026-04-10",
         "key_level_upper": 7135,
@@ -103,12 +42,13 @@ def test_from_dict_missing_session_mode_defaults_to_fresh_setup():
         "targets_lower": [],
         "raw_tweets": [],
         "chop_zone": None,
+        "session_mode": "RUNNER_ACTIVE",  # campo heredado — debe ignorarse
         "notes": "",
         "created_at": "2026-04-10T09:00:00+00:00",
         "updated_at": "2026-04-10T09:00:00+00:00",
     }
     plan = DailyPlan.from_dict(d)
-    assert plan.session_mode == SessionMode.FRESH_SETUP
+    assert plan.key_level_upper == 7135  # datos reales intactos
 
 
 def test_daily_plan_with_chop_zone():
