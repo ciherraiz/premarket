@@ -35,7 +35,7 @@ Estados:
 - `WATCHING` — monitorizando precio cerca del nivel
 - `BREAKDOWN` — precio rompió el nivel (2-11 pts penetración)
 - `RECOVERY` — precio recuperó el nivel
-- `SIGNAL` — aceptación confirmada (3 polls consecutivos sobre nivel)
+- `SIGNAL` — aceptación confirmada (precio ≥ nivel + ACCEPTANCE_PTS durante ACCEPTANCE_SECONDS continuos)
 - `ACTIVE` — trade abierto
 - `DONE` — trade cerrado
 - `EXPIRED` — ventana cerrada sin señal
@@ -44,8 +44,9 @@ Transiciones (Failed Breakdown → señal LONG):
 ```
 WATCHING → BREAKDOWN:   precio < nivel - MIN_BREAK_PTS(2)
                         AND precio > nivel - MAX_BREAK_PTS(11)
-BREAKDOWN → RECOVERY:   precio > nivel + ACCEPTANCE_PTS(1.5)
-RECOVERY → SIGNAL:      ACCEPTANCE_POLLS(3) consecutivos sobre nivel
+BREAKDOWN → RECOVERY:   precio > nivel + ACCEPTANCE_PTS(1.5)  → arranca reloj
+RECOVERY → SIGNAL:      precio ≥ nivel + ACCEPTANCE_PTS durante ACCEPTANCE_SECONDS(120) continuos
+                        (el reloj se pausa si el precio baja del umbral, se resetea si rompe el nivel)
 BREAKDOWN → WATCHING:   precio < nivel - MAX_BREAK_PTS (break real)
 SIGNAL → ACTIVE:        trade registrado
 ACTIVE → DONE:          target/stop/EOD
@@ -54,10 +55,10 @@ Cualquier → EXPIRED:    fuera de ventana de trading
 
 Constantes configurables:
 ```python
-MIN_BREAK_PTS = 2
-MAX_BREAK_PTS = 11
-ACCEPTANCE_PTS = 1.5
-ACCEPTANCE_POLLS = 3
+MIN_BREAK_PTS = 2        # penetración mínima para break convincente
+MAX_BREAK_PTS = 11       # más allá = break real
+ACCEPTANCE_PTS = 1.5     # margen sobre nivel para contar aceptación
+ACCEPTANCE_SECONDS = 120 # segundos continuos sobre umbral para confirmar señal
 ```
 
 Estado persistido en `outputs/mancini_state.json` para sobrevivir reinicios.

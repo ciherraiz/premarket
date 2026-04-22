@@ -17,7 +17,7 @@ from scripts.mancini.detector import (
     MIN_BREAK_PTS,
     MAX_BREAK_PTS,
     ACCEPTANCE_PTS,
-    ACCEPTANCE_POLLS,
+    ACCEPTANCE_SECONDS,
 )
 
 
@@ -31,7 +31,7 @@ def test_initial_state():
     d = make_detector()
     assert d.state == State.WATCHING
     assert d.breakdown_low is None
-    assert d.acceptance_count == 0
+    assert d.acceptance_since is None
 
 
 # ── WATCHING → BREAKDOWN ────────────────────────────────────────────
@@ -76,7 +76,7 @@ def test_watching_stays_watching_price_above():
 # ── BREAKDOWN → RECOVERY ────────────────────────────────────────────
 
 def test_breakdown_to_recovery():
-    """Precio recupera nivel + ACCEPTANCE_PTS → RECOVERY."""
+    """Precio recupera nivel + ACCEPTANCE_PTS → RECOVERY, arranca el reloj."""
     d = make_detector(level=6781)
     d.process_tick(6776, "2026-04-10T14:00:00Z")  # → BREAKDOWN
     assert d.state == State.BREAKDOWN
@@ -86,7 +86,7 @@ def test_breakdown_to_recovery():
     assert t is not None
     assert t.to_state == State.RECOVERY
     assert d.state == State.RECOVERY
-    assert d.acceptance_count == 1
+    assert d.acceptance_since == "2026-04-10T14:01:00Z"
 
 
 def test_breakdown_tracks_low():
@@ -120,27 +120,47 @@ def test_breakdown_to_watching_too_deep():
 
 # ── RECOVERY → SIGNAL ───────────────────────────────────────────────
 
-def test_recovery_to_signal_after_acceptance_polls():
-    """Precio se mantiene sobre nivel N polls → SIGNAL."""
+def test_recovery_to_signal_after_acceptance_time():
+    """Precio se mantiene sobre nivel >= ACCEPTANCE_SECONDS → SIGNAL."""
     d = make_detector(level=6781)
     d.process_tick(6776, "2026-04-10T14:00:00Z")  # → BREAKDOWN
 
-    # Recovery
-    d.process_tick(6783, "2026-04-10T14:01:00Z")  # → RECOVERY (count=1)
+    # Recovery: arranca reloj en T14:01:00
+    d.process_tick(6783, "2026-04-10T14:01:00Z")  # → RECOVERY
     assert d.state == State.RECOVERY
-    assert d.acceptance_count == 1
+    assert d.acceptance_since == "2026-04-10T14:01:00Z"
 
-    # Polls de aceptación
-    d.process_tick(6784, "2026-04-10T14:02:00Z")  # count=2
+    # Elapsed = 60s < 120s → sigue en RECOVERY
+    t = d.process_tick(6784, "2026-04-10T14:02:00Z")
+    assert t is None
     assert d.state == State.RECOVERY
-    assert d.acceptance_count == 2
 
-    t = d.process_tick(6785, "2026-04-10T14:03:00Z")  # count=3 → SIGNAL
+    # Elapsed = 150s >= 120s → SIGNAL
+    t = d.process_tick(6785, "2026-04-10T14:03:30Z")
     assert t is not None
     assert t.to_state == State.SIGNAL
     assert d.state == State.SIGNAL
     assert d.signal_price == 6785
     assert d.breakdown_low == 6776
+
+
+# ── Reloj de aceptación ─────────────────────────────────────────────
+
+def test_recovery_clock_pauses_below_threshold():
+    """Si el precio baja del umbral (pero sigue sobre el nivel) el reloj se pausa."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")   # → BREAKDOWN
+    d.process_tick(6783, "2026-04-10T14:01:00Z")   # → RECOVERY, reloj arranca
+    assert d.acceptance_since == "2026-04-10T14:01:00Z"
+
+    # Precio baja entre nivel y umbral → reloj se pausa
+    d.process_tick(6781.0, "2026-04-10T14:02:00Z")
+    assert d.state == State.RECOVERY
+    assert d.acceptance_since is None
+
+    # Precio sube de nuevo → reloj reinicia desde T14:03:00
+    d.process_tick(6783, "2026-04-10T14:03:00Z")
+    assert d.acceptance_since == "2026-04-10T14:03:00Z"
 
 
 # ── RECOVERY → BREAKDOWN (recaída) ──────────────────────────────────
@@ -156,7 +176,7 @@ def test_recovery_to_breakdown_on_fall():
     assert t is not None
     assert t.to_state == State.BREAKDOWN
     assert d.state == State.BREAKDOWN
-    assert d.acceptance_count == 0  # reseteado
+    assert d.acceptance_since is None  # reloj reseteado
 
 
 # ── Secuencia completa (escenario real) ─────────────────────────────
@@ -181,16 +201,15 @@ def test_full_failed_breakdown_sequence():
     assert d.process_tick(6780, "2026-04-10T14:03:00Z") is None
     assert d.state == State.BREAKDOWN
 
-    # Tick 5: reclaim → RECOVERY
+    # Tick 5: reclaim → RECOVERY, arranca reloj en T14:04:00
     t = d.process_tick(6783, "2026-04-10T14:04:00Z")
     assert t.to_state == State.RECOVERY
 
-    # Ticks 6-7: mantiene sobre nivel → acumula aceptación
+    # Tick 6: elapsed = 60s < 120s → sigue en RECOVERY
     assert d.process_tick(6784, "2026-04-10T14:05:00Z") is None
-    assert d.acceptance_count == 2
 
-    # Tick 8: tercer poll → SIGNAL
-    t = d.process_tick(6785, "2026-04-10T14:06:00Z")
+    # Tick 7: elapsed = 150s >= 120s → SIGNAL
+    t = d.process_tick(6785, "2026-04-10T14:06:30Z")
     assert t.to_state == State.SIGNAL
     assert d.signal_price == 6785
     assert d.breakdown_low == 6774
@@ -213,11 +232,11 @@ def test_full_sequence_with_false_recovery():
     assert d.state == State.BREAKDOWN
     assert d.breakdown_low == 6775
 
-    # Segundo recovery exitoso
+    # Segundo recovery exitoso — reloj arranca en T14:03:00
     d.process_tick(6783, "2026-04-10T14:03:00Z")
     assert d.state == State.RECOVERY
-    d.process_tick(6784, "2026-04-10T14:04:00Z")
-    t = d.process_tick(6785, "2026-04-10T14:05:00Z")
+    d.process_tick(6784, "2026-04-10T14:04:00Z")  # elapsed = 60s
+    t = d.process_tick(6785, "2026-04-10T14:05:30Z")  # elapsed = 150s → SIGNAL
     assert t.to_state == State.SIGNAL
 
 
@@ -274,12 +293,12 @@ def test_reset():
     d = make_detector()
     d.state = State.SIGNAL
     d.breakdown_low = 6774
-    d.acceptance_count = 3
+    d.acceptance_since = "2026-04-10T14:01:00Z"
     d.signal_price = 6785
     d.reset()
     assert d.state == State.WATCHING
     assert d.breakdown_low is None
-    assert d.acceptance_count == 0
+    assert d.acceptance_since is None
     assert d.signal_price is None
 
 
@@ -331,11 +350,14 @@ def test_upper_level_failed_breakdown():
     t = d.process_tick(6804, "2026-04-10T14:00:00Z")
     assert t.to_state == State.BREAKDOWN
 
-    # Recovery
+    # Recovery: reloj arranca en T14:01:00
     t = d.process_tick(6811, "2026-04-10T14:01:00Z")
     assert t.to_state == State.RECOVERY
 
-    # Aceptación
+    # elapsed = 60s < 120s → sigue RECOVERY
     d.process_tick(6812, "2026-04-10T14:02:00Z")
-    t = d.process_tick(6813, "2026-04-10T14:03:00Z")
+    assert d.state == State.RECOVERY
+
+    # elapsed = 150s >= 120s → SIGNAL
+    t = d.process_tick(6813, "2026-04-10T14:03:30Z")
     assert t.to_state == State.SIGNAL
