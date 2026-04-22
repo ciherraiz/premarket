@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -19,7 +20,13 @@ from pathlib import Path
 MIN_BREAK_PTS = 2        # Penetración mínima para break "convincente"
 MAX_BREAK_PTS = 11       # Más allá = break real, no failed
 ACCEPTANCE_PTS = 1.5     # Puntos sobre nivel para considerar "reclaim"
-ACCEPTANCE_POLLS = 3     # Polls consecutivos sobre nivel para confirmar aceptación
+ACCEPTANCE_SECONDS = 120 # Segundos continuos sobre nivel para confirmar aceptación
+
+
+def _elapsed_seconds(start: str, end: str) -> float:
+    t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    t1 = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    return (t1 - t0).total_seconds()
 
 STATE_PATH = Path("outputs/mancini_state.json")
 
@@ -61,7 +68,7 @@ class FailedBreakdownDetector:
     side: str  # "upper" o "lower"
     state: State = State.WATCHING
     breakdown_low: float | None = None
-    acceptance_count: int = 0
+    acceptance_since: str | None = None  # ISO timestamp inicio aceptación continua
     signal_price: float | None = None
     signal_timestamp: str | None = None
 
@@ -133,7 +140,7 @@ class FailedBreakdownDetector:
         # Recovery: precio sube por encima del nivel + acceptance pts
         if price >= self.level + ACCEPTANCE_PTS:
             self.state = State.RECOVERY
-            self.acceptance_count = 1  # Este tick ya cuenta
+            self.acceptance_since = timestamp  # arranca el reloj
             return StateTransition(
                 from_state=prev_state,
                 to_state=State.RECOVERY,
@@ -151,7 +158,7 @@ class FailedBreakdownDetector:
         # Si el precio vuelve a caer bajo el nivel → volver a BREAKDOWN
         if price < self.level - MIN_BREAK_PTS:
             self.state = State.BREAKDOWN
-            self.acceptance_count = 0
+            self.acceptance_since = None
             if self.breakdown_low is None or price < self.breakdown_low:
                 self.breakdown_low = price
             return StateTransition(
@@ -163,30 +170,29 @@ class FailedBreakdownDetector:
                 details={"reason": "failed_recovery"},
             )
 
-        # Precio se mantiene sobre nivel + acceptance pts
         if price >= self.level + ACCEPTANCE_PTS:
-            self.acceptance_count += 1
+            # Reinicia el reloj si se había pausado
+            if self.acceptance_since is None:
+                self.acceptance_since = timestamp
+            elapsed = _elapsed_seconds(self.acceptance_since, timestamp)
+            if elapsed >= ACCEPTANCE_SECONDS:
+                self.state = State.SIGNAL
+                self.signal_price = price
+                self.signal_timestamp = timestamp
+                return StateTransition(
+                    from_state=prev_state,
+                    to_state=State.SIGNAL,
+                    level=self.level,
+                    price=price,
+                    timestamp=timestamp,
+                    details={
+                        "breakdown_low": self.breakdown_low,
+                        "elapsed_seconds": round(elapsed, 1),
+                    },
+                )
         else:
-            # Sobre el nivel pero sin margen suficiente: no resetea,
-            # pero tampoco cuenta para aceptación
-            pass
-
-        # Aceptación confirmada
-        if self.acceptance_count >= ACCEPTANCE_POLLS:
-            self.state = State.SIGNAL
-            self.signal_price = price
-            self.signal_timestamp = timestamp
-            return StateTransition(
-                from_state=prev_state,
-                to_state=State.SIGNAL,
-                level=self.level,
-                price=price,
-                timestamp=timestamp,
-                details={
-                    "breakdown_low": self.breakdown_low,
-                    "acceptance_count": self.acceptance_count,
-                },
-            )
+            # Entre el nivel y el umbral: pausa el reloj
+            self.acceptance_since = None
 
         return None
 
@@ -206,7 +212,7 @@ class FailedBreakdownDetector:
         """Resetea el detector para un nuevo día/ciclo."""
         self.state = State.WATCHING
         self.breakdown_low = None
-        self.acceptance_count = 0
+        self.acceptance_since = None
         self.signal_price = None
         self.signal_timestamp = None
 
@@ -216,7 +222,7 @@ class FailedBreakdownDetector:
             "side": self.side,
             "state": self.state.value,
             "breakdown_low": self.breakdown_low,
-            "acceptance_count": self.acceptance_count,
+            "acceptance_since": self.acceptance_since,
             "signal_price": self.signal_price,
             "signal_timestamp": self.signal_timestamp,
         }
@@ -228,7 +234,7 @@ class FailedBreakdownDetector:
             side=d["side"],
             state=State(d["state"]),
             breakdown_low=d.get("breakdown_low"),
-            acceptance_count=d.get("acceptance_count", 0),
+            acceptance_since=d.get("acceptance_since"),
             signal_price=d.get("signal_price"),
             signal_timestamp=d.get("signal_timestamp"),
         )
