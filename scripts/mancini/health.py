@@ -41,10 +41,14 @@ def write_pid(pid: int) -> None:
 
 
 def read_pid() -> int | None:
-    try:
-        return int(PID_PATH.read_text(encoding="utf-8").strip())
-    except (FileNotFoundError, ValueError):
-        return None
+    for _ in range(3):
+        try:
+            return int(PID_PATH.read_text(encoding="utf-8").strip())
+        except (FileNotFoundError, ValueError):
+            return None
+        except OSError:
+            time.sleep(0.3)
+    return None
 
 
 def clear_pid() -> None:
@@ -56,9 +60,16 @@ def is_monitor_running() -> bool:
     if pid is None:
         return False
     try:
+        import psutil
+        proc = psutil.Process(pid)
+        cmd = " ".join(proc.cmdline())
+        return "run_mancini" in cmd
+    except Exception:
+        pass
+    try:
         os.kill(pid, 0)
         return True
-    except (ProcessLookupError, PermissionError, OSError):
+    except (ProcessLookupError, PermissionError, OSError, SystemError):
         return False
 
 
@@ -87,12 +98,32 @@ def get_orphan_pids() -> list[int]:
         return []
 
     official_pid = read_pid()
+
+    # En Windows, el venv python.exe puede ser un launcher que crea un proceso hijo.
+    # Incluimos al launcher (padre del PID oficial) como parte del monitor oficial
+    # para no detectarlo como huérfano y matarlo accidentalmente.
+    official_pids: set[int] = set()
+    if official_pid:
+        official_pids.add(official_pid)
+        try:
+            p = psutil.Process(official_pid)
+            parent = p.parent()
+            while parent:
+                parent_cmd = " ".join(parent.cmdline() or [])
+                if "run_mancini" in parent_cmd and "monitor" in parent_cmd:
+                    official_pids.add(parent.pid)
+                    parent = parent.parent()
+                else:
+                    break
+        except Exception:
+            pass
+
     orphans = []
     for proc in psutil.process_iter(["pid", "cmdline"]):
         try:
             cmd = " ".join(proc.info["cmdline"] or [])
             if "run_mancini" in cmd and "monitor" in cmd:
-                if proc.info["pid"] != official_pid:
+                if proc.info["pid"] not in official_pids:
                     orphans.append(proc.info["pid"])
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
@@ -183,6 +214,7 @@ class SystemHealth:
 
         overall = "✓ OK" if self.overall_ok else "✗ DEGRADADO — ejecutar: uv run python scripts/mancini/run_mancini.py recover"
 
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         print(
             f"\n=== Mancini System Health ==={nl}"
             f"Plan:       {plan_line}{nl}"
@@ -312,36 +344,42 @@ def _parse_last_quote() -> tuple[float | None, float | None, bool]:
 
 def _launch_monitor() -> int:
     """
-    Lanza el monitor como proceso completamente independiente del padre.
+    Lanza el monitor como proceso independiente del padre.
 
-    Usa DETACHED_PROCESS en Windows para que el monitor sobreviva aunque
-    el proceso padre (Claude Code, terminal, BAT) termine. El PID file
-    garantiza que no se acumulan instancias.
+    CREATE_NO_WINDOW (no DETACHED_PROCESS) es compatible con stdout redirigido
+    a fichero en Windows. El PID file garantiza que no se acumulan instancias.
     """
     python = sys.executable
     script = str(PROJECT_ROOT / "scripts" / "mancini" / "run_mancini.py")
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOGS_DIR / "mancini_monitor.log"
+    log_handle = open(log_file, "a", encoding="utf-8")
 
     env = {**os.environ, "PYTHONUTF8": "1"}
 
     kwargs: dict = {
-        "stdout": open(log_file, "a", encoding="utf-8"),
-        "stderr": subprocess.STDOUT,
-        "stdin":  subprocess.DEVNULL,
+        "stdout": log_handle,
+        "stderr": log_handle,
+        "stdin":  None,
         "env":    env,
         "cwd":    str(PROJECT_ROOT),
     }
 
     if sys.platform == "win32":
+        # CREATE_NO_WINDOW: compatible con file handles en stdout
+        # CREATE_NEW_PROCESS_GROUP: propio grupo, no recibe señales del padre
+        # CREATE_BREAKAWAY_FROM_JOB: escapa del job object de Claude Code/terminal
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
         kwargs["creationflags"] = (
-            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            subprocess.CREATE_NO_WINDOW
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+            | CREATE_BREAKAWAY_FROM_JOB
         )
     else:
-        kwargs["start_new_session"] = True  # Unix: detach del grupo de sesión
+        kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen([python, script, "monitor"], **kwargs)
+    proc = subprocess.Popen([python, script, "monitor", "--no-orders"], **kwargs)
     return proc.pid
 
 

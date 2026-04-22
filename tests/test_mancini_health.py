@@ -69,8 +69,19 @@ class TestPidFile:
         assert is_monitor_running() is False
 
     def test_is_monitor_running_current_process(self):
-        write_pid(os.getpid())
-        assert is_monitor_running() is True
+        import subprocess, sys
+        # Spawn a dummy process with run_mancini in its cmdline
+        proc = subprocess.Popen(
+            [sys.executable, "-c",
+             "import time; time.sleep(10)  # run_mancini dummy"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            write_pid(proc.pid)
+            assert is_monitor_running() is True
+        finally:
+            proc.terminate()
+            proc.wait()
 
     def test_is_monitor_running_stale_pid(self):
         # PID muy alto que (casi seguro) no existe
@@ -203,7 +214,8 @@ class TestCheckHealth:
     def test_plan_ok_monitor_running(self, monkeypatch):
         monkeypatch.setattr("scripts.mancini.config.load_plan", lambda: self._make_plan("2026-04-21"))
         monkeypatch.setattr(health_mod, "_parse_last_quote", lambda: (5300.0, 30.0, True))
-        write_pid(os.getpid())  # proceso real = monitor "corriendo"
+        monkeypatch.setattr(health_mod, "is_monitor_running", lambda: True)
+        write_pid(os.getpid())
         with patch.object(health_mod, "datetime") as mock_dt:
             mock_dt.now.return_value.strftime.return_value = "2026-04-21"
             h = check_health()
@@ -268,6 +280,7 @@ class TestStartDay:
 
     def test_already_running_and_healthy_returns_true(self, monkeypatch):
         write_pid(os.getpid())
+        monkeypatch.setattr(health_mod, "is_monitor_running", lambda: True)
 
         plan = MagicMock()
         plan.fecha = "2026-04-21"
@@ -333,6 +346,7 @@ class TestStopDay:
 
     def test_force_kills_process(self, monkeypatch):
         write_pid(os.getpid())
+        monkeypatch.setattr(health_mod, "is_monitor_running", lambda: True)
         killed = []
         monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
         monkeypatch.setattr(time, "sleep", lambda _: None)
