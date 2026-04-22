@@ -46,6 +46,35 @@ TWEET_POLL_INTERVAL_S = 600  # Polling de tweets (10 min) — buscar plan o camb
 SESSION_START_HOUR = 3   # 03:00 ET (09:00 CEST) — apertura sesión europea
 SESSION_END_HOUR = 16    # 16:00 ET (22:00 CEST) — cierre mercado regular
 
+CONTEXT_ALERT_PTS = 15   # pts sobre nivel para pasar de STANDBY a ALERT_ZONE
+
+
+# ── Contexto determinista precio vs nivel ───────────────────────────
+
+def compute_level_context(price: float, level: float, detector_state: State) -> str:
+    """
+    Calcula el contexto operativo de un nivel a partir del precio actual.
+
+    Independiente de lo que diga Mancini: si el precio está lejos del nivel
+    no hay posibilidad de breakdown, independientemente del tweet.
+
+    Returns:
+        "STANDBY"    — precio > nivel + CONTEXT_ALERT_PTS (sin setup posible)
+        "ALERT_ZONE" — precio dentro de CONTEXT_ALERT_PTS sobre el nivel (vigilar)
+        "BELOW_LEVEL"— precio bajo el nivel pero sin activar detector (inesperado)
+        o el valor del estado del detector si ya está en BREAKDOWN/RECOVERY/etc.
+    """
+    if detector_state != State.WATCHING:
+        return detector_state.value
+
+    dist = price - level  # positivo = precio sobre el nivel
+    if dist > CONTEXT_ALERT_PTS:
+        return "STANDBY"
+    elif dist >= 0:
+        return "ALERT_ZONE"
+    else:
+        return "BELOW_LEVEL"
+
 
 def _now_et() -> datetime:
     return datetime.now(ET)
@@ -88,7 +117,8 @@ class ManciniMonitor:
         self.intraday_state = IntraDayState()
         self.price_history: list[tuple[str, float]] = []
         self._plan_mtime: float = 0
-        self._last_tweet_check: float = 0  # timestamp del último check de tweets
+        self._last_tweet_check: float = 0
+        self._level_contexts: dict[float, str] = {}  # level → último contexto conocido
 
     def load_state(self) -> None:
         """Carga plan, weekly y detectores desde disco."""
@@ -260,14 +290,15 @@ class ManciniMonitor:
             append_scan_result("success", len(new_tweets), True, "", today_et)
             _log("Plan creado!")
             self._log_plan_info()
+
+            # Obtener precio actual para mostrar contexto en la notificación
+            price = self.poll_es()
             notifier.notify_plan_loaded(
                 plan.to_dict(),
+                price=price,
                 session_start=self.session_start,
                 session_end=self.session_end,
             )
-
-            # Chart inicial del plan
-            price = self.poll_es()
             if price:
                 notifier.notify_plan_chart(self.plan, price, self.detectors,
                                           price_history=self.price_history)
@@ -305,11 +336,12 @@ class ManciniMonitor:
         time_et = _now_et().strftime("%H:%M")
         self.price_history.append((time_et, price))
 
-        # 1. Alimentar detectores
+        # 1. Alimentar detectores y trackear contexto
         for detector in self.detectors:
             transition = detector.process_tick(price, ts)
             if transition:
                 events.append(self._handle_transition(transition, price, ts))
+            self._track_level_context(price, detector)
 
         # 2. Gestionar trade activo
         trade_events = self.trade_manager.process_tick(price, ts)
@@ -318,6 +350,21 @@ class ManciniMonitor:
             self._handle_trade_event(te)
 
         return events
+
+    def _track_level_context(self, price: float,
+                             detector: "FailedBreakdownDetector") -> None:
+        """Detecta cambios de contexto precio/nivel y alerta si es necesario."""
+        ctx = compute_level_context(price, detector.level, detector.state)
+        prev = self._level_contexts.get(detector.level)
+
+        if ctx != prev:
+            self._level_contexts[detector.level] = ctx
+            dist = price - detector.level
+            _log(f"Contexto [{detector.side}] {prev} → {ctx} | ES={price} nivel={detector.level} ({dist:+.1f} pts)")
+
+            # Alerta Telegram solo en transición STANDBY → ALERT_ZONE
+            if prev == "STANDBY" and ctx == "ALERT_ZONE":
+                notifier.notify_approaching_level(detector.level, price, dist)
 
     def _handle_transition(self, t: StateTransition, price: float,
                            ts: str) -> dict:
@@ -805,7 +852,12 @@ class ManciniMonitor:
                         time.sleep(self.poll_interval)
                         continue
 
-                    _log(f"ES={price:.2f}")
+                    ctx_parts = []
+                    for det in self.detectors:
+                        dist = price - det.level
+                        ctx = compute_level_context(price, det.level, det.state)
+                        ctx_parts.append(f"{det.side}={det.level}({dist:+.0f}pts/{ctx})")
+                    _log(f"ES={price:.2f} | {' | '.join(ctx_parts)}")
                     self.process_tick(price)
 
                     # Clasificar tweets intraday nuevos (cada tweet_poll_interval)

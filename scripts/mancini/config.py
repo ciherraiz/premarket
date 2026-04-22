@@ -70,6 +70,7 @@ class DailyPlan:
     def from_dict(cls, d: dict) -> DailyPlan:
         if d.get("chop_zone") is not None:
             d["chop_zone"] = tuple(d["chop_zone"])
+        d.pop("session_mode", None)  # retrocompatibilidad con planes guardados anteriormente
         return cls(**d)
 
 
