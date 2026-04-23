@@ -518,6 +518,36 @@ def test_scan_for_plan_no_plan_keeps_tweets_unprocessed(mock_fetch, mock_parse,
     assert "t1" not in m.intraday_state.processed_tweet_ids
 
 
+# ── run() — chart on startup ─────────────────────────────────────────
+
+def test_run_sends_chart_when_plan_already_on_disk(plan_path, state_path, weekly_path, mock_notifier):
+    """run() envía notify_plan_chart si el plan ya está en disco al arrancar."""
+    plan = DailyPlan(
+        fecha="2026-04-10",
+        key_level_upper=6809,
+        targets_upper=[6819, 6830],
+        key_level_lower=6781,
+        targets_lower=[6766],
+    )
+    save_plan(plan, plan_path)
+
+    m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
+                       weekly_path=weekly_path, poll_interval=0, gate_enabled=False,
+                       session_end=4)  # session_end=4 → loop exits immediately
+
+    with patch("scripts.mancini.monitor._now_et",
+               return_value=datetime(2026, 4, 10, 9, 30, 0, tzinfo=ET)), \
+         patch("scripts.mancini.health.write_pid"), \
+         patch("scripts.mancini.health.clear_pid"), \
+         patch("scripts.mancini.health.clear_stop_flag"), \
+         patch("scripts.mancini.health.stop_requested", return_value=False), \
+         patch.object(m, "poll_es", return_value=6800.0):
+        m.run()
+
+    mock_notifier.notify_plan_loaded.assert_called_once()
+    mock_notifier.notify_plan_chart.assert_called_once()
+
+
 # ── compute_level_context ────────────────────────────────────────────
 
 def test_context_standby_far_above_level():
