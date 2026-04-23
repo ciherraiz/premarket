@@ -21,6 +21,7 @@ MIN_BREAK_PTS = 2        # Penetración mínima para break "convincente"
 MAX_BREAK_PTS = 11       # Más allá = break real, no failed
 ACCEPTANCE_PTS = 1.5     # Puntos sobre nivel para considerar "reclaim"
 ACCEPTANCE_SECONDS = 120 # Segundos continuos sobre nivel para confirmar aceptación
+MAX_ACCEPTANCE_PAUSES = 3 # Retests máximos durante aceptación; si se supera → WATCHING
 
 
 def _elapsed_seconds(start: str, end: str) -> float:
@@ -71,6 +72,8 @@ class FailedBreakdownDetector:
     acceptance_since: str | None = None  # ISO timestamp inicio aceptación continua
     signal_price: float | None = None
     signal_timestamp: str | None = None
+    acceptance_pauses: int = 0                # retests durante ventana de aceptación
+    acceptance_max_price: float | None = None # precio máximo alcanzado en ventana
 
     def process_tick(self, price: float, timestamp: str) -> StateTransition | None:
         """
@@ -141,6 +144,8 @@ class FailedBreakdownDetector:
         if price >= self.level + ACCEPTANCE_PTS:
             self.state = State.RECOVERY
             self.acceptance_since = timestamp  # arranca el reloj
+            self.acceptance_pauses = 0
+            self.acceptance_max_price = price
             return StateTransition(
                 from_state=prev_state,
                 to_state=State.RECOVERY,
@@ -159,6 +164,8 @@ class FailedBreakdownDetector:
         if price < self.level - MIN_BREAK_PTS:
             self.state = State.BREAKDOWN
             self.acceptance_since = None
+            self.acceptance_pauses = 0
+            self.acceptance_max_price = None
             if self.breakdown_low is None or price < self.breakdown_low:
                 self.breakdown_low = price
             return StateTransition(
@@ -171,11 +178,21 @@ class FailedBreakdownDetector:
             )
 
         if price >= self.level + ACCEPTANCE_PTS:
-            # Reinicia el reloj si se había pausado
+            # Actualizar precio máximo alcanzado durante la aceptación
+            if self.acceptance_max_price is None or price > self.acceptance_max_price:
+                self.acceptance_max_price = price
+
+            # Reiniciar reloj si se había pausado
             if self.acceptance_since is None:
                 self.acceptance_since = timestamp
+
             elapsed = _elapsed_seconds(self.acceptance_since, timestamp)
             if elapsed >= ACCEPTANCE_SECONDS:
+                # Calcular métricas de calidad de la señal
+                depth_pts = round(self.level - (self.breakdown_low or self.level), 2)
+                max_above = round((self.acceptance_max_price or price) - self.level, 2)
+                velocity = round(max_above / (elapsed / 60), 2) if elapsed > 0 else 0.0
+
                 self.state = State.SIGNAL
                 self.signal_price = price
                 self.signal_timestamp = timestamp
@@ -188,10 +205,36 @@ class FailedBreakdownDetector:
                     details={
                         "breakdown_low": self.breakdown_low,
                         "elapsed_seconds": round(elapsed, 1),
+                        "breakdown_depth_pts": depth_pts,
+                        "acceptance_pauses": self.acceptance_pauses,
+                        "acceptance_max_above_level": max_above,
+                        "recovery_velocity_pts_min": velocity,
                     },
                 )
         else:
-            # Entre el nivel y el umbral: pausa el reloj
+            # Entre el nivel y el umbral: pausar reloj y contar retest
+            if self.acceptance_since is not None:
+                self.acceptance_pauses += 1
+
+                # Filtro duro: demasiados retests → señal inválida
+                if self.acceptance_pauses >= MAX_ACCEPTANCE_PAUSES:
+                    self.state = State.WATCHING
+                    self.breakdown_low = None
+                    self.acceptance_since = None
+                    self.acceptance_pauses = 0
+                    self.acceptance_max_price = None
+                    return StateTransition(
+                        from_state=prev_state,
+                        to_state=State.WATCHING,
+                        level=self.level,
+                        price=price,
+                        timestamp=timestamp,
+                        details={
+                            "reason": "excessive_retests",
+                            "pauses": MAX_ACCEPTANCE_PAUSES,
+                        },
+                    )
+
             self.acceptance_since = None
 
         return None
@@ -215,6 +258,8 @@ class FailedBreakdownDetector:
         self.acceptance_since = None
         self.signal_price = None
         self.signal_timestamp = None
+        self.acceptance_pauses = 0
+        self.acceptance_max_price = None
 
     def to_dict(self) -> dict:
         return {
@@ -225,6 +270,8 @@ class FailedBreakdownDetector:
             "acceptance_since": self.acceptance_since,
             "signal_price": self.signal_price,
             "signal_timestamp": self.signal_timestamp,
+            "acceptance_pauses": self.acceptance_pauses,
+            "acceptance_max_price": self.acceptance_max_price,
         }
 
     @classmethod
@@ -237,6 +284,8 @@ class FailedBreakdownDetector:
             acceptance_since=d.get("acceptance_since"),
             signal_price=d.get("signal_price"),
             signal_timestamp=d.get("signal_timestamp"),
+            acceptance_pauses=d.get("acceptance_pauses", 0),
+            acceptance_max_price=d.get("acceptance_max_price"),
         )
 
 

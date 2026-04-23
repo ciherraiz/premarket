@@ -41,7 +41,7 @@ from scripts.mancini import notifier
 ET = ZoneInfo("America/New_York")
 
 # ── Constantes ──────────────────────────────────────────────────────
-POLL_INTERVAL_S = 60       # Polling de precio /ES (con plan activo)
+POLL_INTERVAL_S = 15       # Polling de precio /ES (con plan activo)
 TWEET_POLL_INTERVAL_S = 600  # Polling de tweets (10 min) — buscar plan o cambios intraday
 SESSION_START_HOUR = 3   # 03:00 ET (09:00 CEST) — apertura sesión europea
 SESSION_END_HOUR = 16    # 16:00 ET (22:00 CEST) — cierre mercado regular
@@ -397,11 +397,35 @@ class ManciniMonitor:
             if alignment == "MISALIGNED":
                 _log(f"⚠️ Trade MISALIGNED (contra sesgo semanal) — solo T1")
 
+            # ── Métricas de calidad de la señal ──
+            breakdown_depth_pts = t.details.get("breakdown_depth_pts", 0.0)
+            acceptance_pauses   = t.details.get("acceptance_pauses", 0)
+            max_above_level     = t.details.get("acceptance_max_above_level", 0.0)
+            velocity            = t.details.get("recovery_velocity_pts_min", 0.0)
+            hour_et = _now_et().hour
+            minute_et = _now_et().minute
+            if hour_et < 12 or (hour_et == 12 and minute_et < 30):
+                time_quality = "prime"
+            elif hour_et < 14:
+                time_quality = "extended"
+            else:
+                time_quality = "late"
+            _log(
+                f"Calidad señal — depth={breakdown_depth_pts}pts "
+                f"pauses={acceptance_pauses} max=+{max_above_level}pts "
+                f"vel={velocity}pts/min hora={time_quality}"
+            )
+
             # ── Execution Gate ──
             stop_price = calc_stop(direction, price, breakdown_low)
             should_execute, gate_decision = self._evaluate_gate(
                 price, t.level, breakdown_low, direction,
                 stop_price, targets, alignment, ts,
+                breakdown_depth_pts=breakdown_depth_pts,
+                acceptance_pauses=acceptance_pauses,
+                acceptance_max_above_level=max_above_level,
+                recovery_velocity_pts_min=velocity,
+                time_quality=time_quality,
             )
 
             if not should_execute:
@@ -530,6 +554,11 @@ class ManciniMonitor:
         self, price: float, level: float, breakdown_low: float,
         direction: str, stop_price: float, targets: list[float],
         alignment: str, ts: str,
+        breakdown_depth_pts: float = 0.0,
+        acceptance_pauses: int = 0,
+        acceptance_max_above_level: float = 0.0,
+        recovery_velocity_pts_min: float = 0.0,
+        time_quality: str = "prime",
     ) -> tuple[bool, "GateDecision | None"]:
         """Evalúa el Execution Gate. Retorna (should_execute, decision)."""
         if not self.gate_enabled:
@@ -552,6 +581,11 @@ class ManciniMonitor:
                 recent_adjustments=self.intraday_state.adjustments,
                 current_time_et=_now_et(),
                 session_end_hour=self.session_end,
+                breakdown_depth_pts=breakdown_depth_pts,
+                acceptance_pauses=acceptance_pauses,
+                acceptance_max_above_level=acceptance_max_above_level,
+                recovery_velocity_pts_min=recovery_velocity_pts_min,
+                time_quality=time_quality,
             )
         except Exception as e:
             _log(f"Error en Execution Gate: {e} — ejecutando sin gate")

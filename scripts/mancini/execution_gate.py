@@ -44,6 +44,22 @@ ejecutar el trade, no si la señal técnica es correcta (eso ya está confirmado
 - Actualizaciones intraday recientes: {recent_updates}
 - Notas del plan: {plan_notes}
 
+## Métricas de calidad de la señal técnica
+
+Estas métricas describen CÓMO se produjo la confirmación. Úsalas para evaluar
+la convicción real de la señal, no solo que ocurrió:
+
+- Profundidad del breakdown: {breakdown_depth_pts} pts
+  (óptimo: 4-8 pts; < 3 = posible ruido; 9-11 = trampa fuerte)
+- Retests durante aceptación: {acceptance_pauses}
+  (0 = aceptación limpia; 1 = aceptable; 2+ = indecisión)
+- Precio máximo sobre nivel durante aceptación: {acceptance_max_above_level} pts
+  (> 3 pts = convicción; < 2 pts = precio apenas superó el umbral)
+- Velocidad de recuperación: {recovery_velocity_pts_min} pts/min
+  (> 2.0 = recuperación agresiva; < 1.0 = anémica, posible trampa)
+- Calidad horaria: {time_quality}
+  (prime = 09:30-12:30 ET, óptimo; extended = 12:30-14:00, normal; late = 14:00+, cuidado)
+
 ## Criterios de evaluación
 
 Factores que FAVORECEN ejecución:
@@ -52,6 +68,8 @@ Factores que FAVORECEN ejecución:
 - Sin trades perdedores previos hoy (o el primero del día)
 - Sin actualizaciones intraday recientes que contradigan el trade
 - Riesgo razonable (stop < 10 pts)
+- Velocidad de recuperación >= 2.0 pts/min
+- 0 retests durante aceptación (aceptación limpia)
 
 Factores de RIESGO (no necesariamente descalificantes):
 - Menos de 30 minutos para cierre (poco recorrido)
@@ -59,7 +77,16 @@ Factores de RIESGO (no necesariamente descalificantes):
 - Día con 2+ trades perdedores (drawdown)
 - Invalidación intraday reciente seguida de re-validación
 - Riesgo alto (stop > 12 pts)
-- Breakdown muy poco profundo (< 3 pts, señal débil)
+- Breakdown muy poco profundo (< 3 pts, posible ruido)
+- Velocidad de recuperación < 1.0 pts/min (señal anémica)
+- 2+ retests durante aceptación (indecisión en el nivel)
+- Precio máximo < 2 pts sobre nivel (sin convicción real)
+- time_quality = "late" (sesión avanzada, menos recorrido)
+
+REGLA IMPORTANTE: si hay 2 o más factores de riesgo de calidad activos
+simultáneamente (profundidad < 3, velocidad < 1.0, retests >= 2, max < 2 pts,
+o time_quality = "late"), establece execute=false aunque el contexto temporal
+sea favorable. La calidad de la señal importa tanto como el contexto.
 
 ## Decisión
 
@@ -111,6 +138,11 @@ def evaluate_signal(
     recent_adjustments: list,
     current_time_et: datetime,
     session_end_hour: int,
+    breakdown_depth_pts: float = 0.0,
+    acceptance_pauses: int = 0,
+    acceptance_max_above_level: float = 0.0,
+    recovery_velocity_pts_min: float = 0.0,
+    time_quality: str = "prime",
 ) -> GateDecision:
     """
     Evalúa si el contexto es favorable para ejecutar un trade.
@@ -180,6 +212,11 @@ def evaluate_signal(
         daily_pnl=daily_pnl,
         recent_updates=recent_updates,
         plan_notes=plan_notes or "sin notas",
+        breakdown_depth_pts=breakdown_depth_pts,
+        acceptance_pauses=acceptance_pauses,
+        acceptance_max_above_level=acceptance_max_above_level,
+        recovery_velocity_pts_min=recovery_velocity_pts_min,
+        time_quality=time_quality,
     )
 
     client = anthropic.Anthropic()
