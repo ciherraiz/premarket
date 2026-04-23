@@ -18,6 +18,7 @@ from scripts.mancini.detector import (
     MAX_BREAK_PTS,
     ACCEPTANCE_PTS,
     ACCEPTANCE_SECONDS,
+    MAX_ACCEPTANCE_PAUSES,
 )
 
 
@@ -361,3 +362,224 @@ def test_upper_level_failed_breakdown():
     # elapsed = 150s >= 120s → SIGNAL
     t = d.process_tick(6813, "2026-04-10T14:03:30Z")
     assert t.to_state == State.SIGNAL
+
+
+# ── Métricas de calidad en SIGNAL details ──────────────────────────
+
+def test_signal_includes_quality_metrics():
+    """SIGNAL emitido contiene todas las métricas de calidad."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")   # → BREAKDOWN (depth=5)
+    d.process_tick(6783, "2026-04-10T14:01:00Z")   # → RECOVERY
+    d.process_tick(6785, "2026-04-10T14:02:00Z")   # reloj corriendo, max sube a 6785
+    t = d.process_tick(6784, "2026-04-10T14:03:30Z")  # elapsed=150s → SIGNAL
+    assert t is not None
+    assert t.to_state == State.SIGNAL
+    assert "breakdown_depth_pts" in t.details
+    assert "acceptance_pauses" in t.details
+    assert "acceptance_max_above_level" in t.details
+    assert "recovery_velocity_pts_min" in t.details
+
+
+def test_signal_breakdown_depth_calculated():
+    """breakdown_depth_pts = nivel - breakdown_low."""
+    d = make_detector(level=6781)
+    d.process_tick(6774, "2026-04-10T14:00:00Z")   # → BREAKDOWN, low=6774 (depth=7)
+    d.process_tick(6783, "2026-04-10T14:01:00Z")   # → RECOVERY
+    t = d.process_tick(6784, "2026-04-10T14:03:30Z")  # → SIGNAL
+    assert t.details["breakdown_depth_pts"] == 7.0
+
+
+def test_signal_max_above_level_tracked():
+    """acceptance_max_above_level refleja el máximo alcanzado durante la aceptación."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")   # → BREAKDOWN
+    d.process_tick(6783, "2026-04-10T14:01:00Z")   # → RECOVERY, max=6783 (+2)
+    d.process_tick(6788, "2026-04-10T14:02:00Z")   # max sube a 6788 (+7)
+    d.process_tick(6784, "2026-04-10T14:02:30Z")   # baja pero max se mantiene
+    t = d.process_tick(6784, "2026-04-10T14:03:30Z")  # → SIGNAL
+    assert t is not None
+    assert t.details["acceptance_max_above_level"] == 7.0
+
+
+def test_signal_velocity_positive():
+    """recovery_velocity_pts_min es positivo cuando hay convicción."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")   # → BREAKDOWN
+    d.process_tick(6786, "2026-04-10T14:01:00Z")   # → RECOVERY, max=6786 (+5)
+    t = d.process_tick(6786, "2026-04-10T14:03:30Z")  # elapsed=150s → SIGNAL
+    # velocity = 5 / (150/60) = 5 / 2.5 = 2.0 pts/min
+    assert t is not None
+    assert t.details["recovery_velocity_pts_min"] == 2.0
+
+
+# ── Conteo de pausas (retests) ──────────────────────────────────────
+
+def test_acceptance_pauses_increments_on_dip():
+    """Precio cae bajo ACCEPTANCE_PTS durante RECOVERY → pauses sube a 1."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")   # → BREAKDOWN
+    d.process_tick(6783, "2026-04-10T14:01:00Z")   # → RECOVERY, reloj arranca
+
+    # Precio cae entre nivel y umbral → pausa el reloj, pauses += 1
+    d.process_tick(6781.5, "2026-04-10T14:01:30Z")
+    assert d.acceptance_pauses == 1
+    assert d.acceptance_since is None
+
+
+def test_acceptance_pauses_multiple_dips():
+    """Dos dips sucesivos acumulan 2 pausas."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")
+    d.process_tick(6783, "2026-04-10T14:01:00Z")   # → RECOVERY
+
+    d.process_tick(6781.5, "2026-04-10T14:01:15Z")  # pausa 1
+    assert d.acceptance_pauses == 1
+    d.process_tick(6783, "2026-04-10T14:01:30Z")    # reloj reinicia
+    d.process_tick(6781.5, "2026-04-10T14:01:45Z")  # pausa 2
+    assert d.acceptance_pauses == 2
+
+
+def test_acceptance_pauses_not_incremented_when_clock_already_paused():
+    """Si el reloj ya estaba pausado, un nuevo tick bajo umbral no acumula pausa extra."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")
+    d.process_tick(6783, "2026-04-10T14:01:00Z")   # → RECOVERY
+
+    d.process_tick(6781.5, "2026-04-10T14:01:15Z")  # pausa 1, reloj = None
+    assert d.acceptance_pauses == 1
+    d.process_tick(6781.5, "2026-04-10T14:01:30Z")  # reloj ya era None, no suma
+    assert d.acceptance_pauses == 1
+
+
+def test_acceptance_pauses_reset_on_failed_recovery():
+    """Al volver a BREAKDOWN desde RECOVERY, acceptance_pauses se resetea."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")
+    d.process_tick(6783, "2026-04-10T14:01:00Z")   # → RECOVERY
+    d.process_tick(6781.5, "2026-04-10T14:01:15Z")  # pausa 1
+    assert d.acceptance_pauses == 1
+
+    # Recaída a BREAKDOWN
+    d.process_tick(6778, "2026-04-10T14:01:30Z")
+    assert d.acceptance_pauses == 0
+
+
+def test_two_pauses_still_emits_signal():
+    """2 pausas son aceptables — el SIGNAL se emite correctamente."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")
+    d.process_tick(6783, "2026-04-10T14:01:00Z")   # → RECOVERY, reloj T01:00
+
+    d.process_tick(6781.5, "2026-04-10T14:01:15Z")  # pausa 1, reloj para
+    d.process_tick(6783, "2026-04-10T14:01:30Z")    # reloj reinicia T01:30
+    d.process_tick(6781.5, "2026-04-10T14:01:45Z")  # pausa 2, reloj para
+    d.process_tick(6783, "2026-04-10T14:02:00Z")    # reloj reinicia T02:00
+
+    # 120s desde T02:00 → SIGNAL
+    t = d.process_tick(6784, "2026-04-10T14:04:00Z")
+    assert t is not None
+    assert t.to_state == State.SIGNAL
+    assert t.details["acceptance_pauses"] == 2
+
+
+# ── Filtro duro: retests excesivos ──────────────────────────────────
+
+def test_excessive_retests_resets_to_watching():
+    """MAX_ACCEPTANCE_PAUSES retests durante RECOVERY → WATCHING, no SIGNAL."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")
+    d.process_tick(6783, "2026-04-10T14:01:00Z")   # → RECOVERY
+
+    # Simular MAX_ACCEPTANCE_PAUSES ciclos dip/subida
+    for i in range(MAX_ACCEPTANCE_PAUSES):
+        ts_up   = f"2026-04-10T14:0{i+1}:00Z"
+        ts_down = f"2026-04-10T14:0{i+1}:30Z"
+        d.process_tick(6783, ts_up)    # reloj arranca/reinicia
+        t = d.process_tick(6781.5, ts_down)  # pausa
+        if t is not None:
+            break
+
+    assert t is not None
+    assert t.to_state == State.WATCHING
+    assert t.details["reason"] == "excessive_retests"
+    assert d.state == State.WATCHING
+    assert d.acceptance_pauses == 0
+    assert d.breakdown_low is None
+
+
+def test_excessive_retests_detector_can_restart():
+    """Tras resetear por retests excesivos, el detector puede detectar un nuevo breakdown."""
+    d = make_detector(level=6781)
+    d.process_tick(6776, "2026-04-10T14:00:00Z")
+    d.process_tick(6783, "2026-04-10T14:01:00Z")
+
+    for i in range(MAX_ACCEPTANCE_PAUSES):
+        d.process_tick(6783, f"2026-04-10T14:0{i+1}:00Z")
+        t = d.process_tick(6781.5, f"2026-04-10T14:0{i+1}:30Z")
+        if t is not None and t.to_state == State.WATCHING:
+            break
+
+    assert d.state == State.WATCHING
+
+    # Nuevo breakdown después del reset
+    t2 = d.process_tick(6774, "2026-04-10T14:10:00Z")
+    assert t2 is not None
+    assert t2.to_state == State.BREAKDOWN
+
+
+# ── Persistencia con campos nuevos ─────────────────────────────────
+
+def test_to_dict_includes_new_fields():
+    """to_dict() serializa acceptance_pauses y acceptance_max_price."""
+    d = make_detector(level=6781)
+    d.acceptance_pauses = 2
+    d.acceptance_max_price = 6788.5
+
+    data = d.to_dict()
+    assert data["acceptance_pauses"] == 2
+    assert data["acceptance_max_price"] == 6788.5
+
+
+def test_from_dict_with_missing_new_fields():
+    """Diccionarios sin campos nuevos (estado antiguo) se deserializan con defaults."""
+    old_data = {
+        "level": 6781.0,
+        "side": "lower",
+        "state": "RECOVERY",
+        "breakdown_low": 6776.0,
+        "acceptance_since": "2026-04-10T14:01:00Z",
+        "signal_price": None,
+        "signal_timestamp": None,
+        # Sin acceptance_pauses ni acceptance_max_price
+    }
+    d = FailedBreakdownDetector.from_dict(old_data)
+    assert d.acceptance_pauses == 0
+    assert d.acceptance_max_price is None
+
+
+def test_roundtrip_with_new_fields(tmp_path):
+    """Serialización completa (save/load) con campos nuevos."""
+    d = make_detector(level=6781, side="lower")
+    d.state = State.RECOVERY
+    d.breakdown_low = 6776.0
+    d.acceptance_since = "2026-04-10T14:01:00Z"
+    d.acceptance_pauses = 1
+    d.acceptance_max_price = 6785.0
+
+    path = tmp_path / "state.json"
+    save_detectors([d], path=path)
+    loaded = load_detectors(path=path)
+
+    assert loaded[0].acceptance_pauses == 1
+    assert loaded[0].acceptance_max_price == 6785.0
+
+
+def test_reset_clears_new_fields():
+    """reset() limpia acceptance_pauses y acceptance_max_price."""
+    d = make_detector()
+    d.acceptance_pauses = 2
+    d.acceptance_max_price = 6790.0
+    d.reset()
+    assert d.acceptance_pauses == 0
+    assert d.acceptance_max_price is None
