@@ -218,6 +218,16 @@ class ManciniMonitor:
             if self.plan:
                 _log("Plan de hoy encontrado en disco")
                 self._log_plan_info()
+                price = self.poll_es()
+                notifier.notify_plan_loaded(
+                    self.plan.to_dict(),
+                    price=price,
+                    session_start=self.session_start,
+                    session_end=self.session_end,
+                )
+                if price:
+                    notifier.notify_plan_chart(self.plan, price, self.detectors,
+                                              price_history=self.price_history)
                 return True
 
             # 2. Fetch tweets y parsear

@@ -413,9 +413,9 @@ def test_load_state_stale_plan_discarded(plan_path, state_path, weekly_path):
 
 # ── Scan for plan ─────────────────────────────────────────────────
 
-def test_scan_for_plan_finds_existing_on_disk(plan_path, state_path, weekly_path):
-    """_scan_for_plan detecta plan existente en disco."""
-    # Crear plan en disco antes de arrancar
+def test_scan_for_plan_finds_existing_on_disk(plan_path, state_path, weekly_path,
+                                               mock_notifier):
+    """_scan_for_plan detecta plan existente en disco y envía chart + notificación."""
     plan = DailyPlan(
         fecha="2026-04-10",
         key_level_upper=6809,
@@ -428,10 +428,15 @@ def test_scan_for_plan_finds_existing_on_disk(plan_path, state_path, weekly_path
     m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
                        weekly_path=weekly_path, poll_interval=0, gate_enabled=False)
 
-    found = m._scan_for_plan()
+    with patch.object(m, "poll_es", return_value=6810.0):
+        found = m._scan_for_plan()
+
     assert found is True
     assert m.plan is not None
     assert m.plan.fecha == "2026-04-10"
+    # Notificaciones enviadas también cuando el plan viene de disco
+    mock_notifier.notify_plan_loaded.assert_called_once()
+    mock_notifier.notify_plan_chart.assert_called_once()
 
 
 def test_scan_for_plan_respects_session_end(plan_path, state_path, weekly_path):
