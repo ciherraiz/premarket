@@ -481,6 +481,38 @@ def test_scan_for_plan_fetches_tweets(mock_fetch, mock_parse,
     mock_notifier.notify_plan_loaded.assert_called_once()
 
 
+@patch("scripts.mancini.tweet_parser.parse_tweets_to_plan")
+@patch("scripts.mancini.tweet_fetcher.fetch_mancini_tweets")
+def test_scan_for_plan_no_plan_keeps_tweets_unprocessed(mock_fetch, mock_parse,
+                                                         plan_path, state_path,
+                                                         weekly_path, mock_notifier,
+                                                         tmp_path):
+    """Cuando Haiku no encuentra plan, los tweets NO se marcan como procesados."""
+    mock_fetch.return_value = [
+        {"id": "t1", "text": "Some reply tweet", "created_at": "2026-04-23T08:00:00-04:00"},
+    ]
+    mock_parse.return_value = None  # Haiku no encontró plan
+
+    intraday_path = tmp_path / "mancini_intraday.json"
+    # session_end=4: cuando _now_et devuelva 4:00 ET el loop sale
+    m = ManciniMonitor(client=None, plan_path=plan_path, state_path=state_path,
+                       weekly_path=weekly_path, intraday_path=intraday_path,
+                       poll_interval=0, tweet_poll_interval=0, session_end=4,
+                       gate_enabled=False)
+
+    times = [
+        datetime(2026, 4, 23, 3, 0, 0, tzinfo=ET),   # primer ciclo: buscar tweets
+        datetime(2026, 4, 23, 4, 0, 0, tzinfo=ET),   # segundo ciclo: hour>=session_end → salir
+    ]
+    time_iter = iter(times)
+
+    with patch("scripts.mancini.monitor._now_et", side_effect=lambda: next(time_iter, times[-1])):
+        m._scan_for_plan()
+
+    # El tweet NO debe estar en processed_tweet_ids — puede reintentarse cuando haya plan real
+    assert "t1" not in m.intraday_state.processed_tweet_ids
+
+
 # ── compute_level_context ────────────────────────────────────────────
 
 def test_context_standby_far_above_level():

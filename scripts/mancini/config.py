@@ -115,9 +115,11 @@ class IntraDayState:
     processed_tweet_ids: set[str] = field(default_factory=set)
     adjustments: list[PlanAdjustment] = field(default_factory=list)
     last_check: str = ""
+    fecha: str = ""  # YYYY-MM-DD — para detectar cambio de día y resetear
 
     def to_dict(self) -> dict:
         return {
+            "fecha": self.fecha,
             "processed_tweet_ids": sorted(self.processed_tweet_ids),
             "adjustments": [a.to_dict() for a in self.adjustments],
             "last_check": self.last_check,
@@ -129,6 +131,7 @@ class IntraDayState:
             processed_tweet_ids=set(d.get("processed_tweet_ids", [])),
             adjustments=[PlanAdjustment.from_dict(a) for a in d.get("adjustments", [])],
             last_check=d.get("last_check", ""),
+            fecha=d.get("fecha", ""),
         )
 
 
@@ -140,11 +143,16 @@ def save_intraday_state(state: IntraDayState, path: Path = INTRADAY_STATE_PATH) 
 
 
 def load_intraday_state(path: Path = INTRADAY_STATE_PATH) -> IntraDayState:
-    """Carga el estado intraday desde JSON. Retorna estado vacío si no existe."""
+    """Carga el estado intraday desde JSON. Retorna estado vacío si no existe o es de otro día."""
     if not path.exists():
         return IntraDayState()
     data = json.loads(path.read_text(encoding="utf-8"))
-    return IntraDayState.from_dict(data)
+    state = IntraDayState.from_dict(data)
+    from datetime import date
+    today = date.today().isoformat()
+    if state.fecha and state.fecha != today:
+        return IntraDayState()  # nuevo día → estado limpio
+    return state
 
 
 def save_weekly(plan: DailyPlan, path: Path = WEEKLY_PLAN_PATH) -> None:
