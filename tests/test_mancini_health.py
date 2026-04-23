@@ -337,6 +337,78 @@ class TestStartDay:
         assert launched == [1]
         assert result is True
 
+    def test_intraday_state_preserved_on_same_day_restart(self, monkeypatch, tmp_path):
+        """start_day NO borra mancini_intraday.json si su fecha coincide con hoy."""
+        import json
+        today = "2026-04-21"
+
+        # Crear fichero intraday con fecha de hoy y tweets procesados
+        intraday_file = tmp_path / "mancini_intraday.json"
+        intraday_file.write_text(json.dumps({
+            "fecha": today,
+            "processed_tweet_ids": ["t1", "t2", "t3"],
+            "adjustments": [],
+            "last_check": "",
+        }), encoding="utf-8")
+
+        monkeypatch.setattr(health_mod, "OUTPUTS_DIR", tmp_path)
+        monkeypatch.setattr("scripts.mancini.config.load_plan", lambda: None)
+        monkeypatch.setattr(health_mod, "_launch_monitor", lambda: 9999)
+
+        healthy = SystemHealth(
+            plan_ok=False, plan_fecha=None, plan_upper=None, plan_targets_upper=[],
+            plan_lower=None, plan_targets_lower=[],
+            monitor_running=True, monitor_pid=9999, monitor_uptime_s=5.0,
+            last_quote_ok=True, last_quote_price=5300.0, last_quote_age_s=10.0,
+            detector_count=0, detector_states=[], active_trade=False,
+            orphan_count=0, overall_ok=True,
+        )
+        monkeypatch.setattr(health_mod, "check_health", lambda: healthy)
+
+        with patch.object(health_mod, "datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.return_value = today
+            start_day(skip_scan=True)
+
+        # El fichero debe seguir existiendo con los mismos tweets
+        assert intraday_file.exists(), "mancini_intraday.json fue borrado — no debería"
+        data = json.loads(intraday_file.read_text(encoding="utf-8"))
+        assert set(data["processed_tweet_ids"]) == {"t1", "t2", "t3"}
+
+    def test_intraday_state_deleted_on_new_day(self, monkeypatch, tmp_path):
+        """start_day SÍ borra mancini_intraday.json si su fecha es de ayer."""
+        import json
+        today = "2026-04-21"
+        yesterday = "2026-04-20"
+
+        intraday_file = tmp_path / "mancini_intraday.json"
+        intraday_file.write_text(json.dumps({
+            "fecha": yesterday,
+            "processed_tweet_ids": ["t_old"],
+            "adjustments": [],
+            "last_check": "",
+        }), encoding="utf-8")
+
+        monkeypatch.setattr(health_mod, "OUTPUTS_DIR", tmp_path)
+        monkeypatch.setattr("scripts.mancini.config.load_plan", lambda: None)
+        monkeypatch.setattr(health_mod, "_launch_monitor", lambda: 9999)
+
+        healthy = SystemHealth(
+            plan_ok=False, plan_fecha=None, plan_upper=None, plan_targets_upper=[],
+            plan_lower=None, plan_targets_lower=[],
+            monitor_running=True, monitor_pid=9999, monitor_uptime_s=5.0,
+            last_quote_ok=True, last_quote_price=5300.0, last_quote_age_s=10.0,
+            detector_count=0, detector_states=[], active_trade=False,
+            orphan_count=0, overall_ok=True,
+        )
+        monkeypatch.setattr(health_mod, "check_health", lambda: healthy)
+
+        with patch.object(health_mod, "datetime") as mock_dt:
+            mock_dt.now.return_value.strftime.return_value = today
+            start_day(skip_scan=True)
+
+        # El fichero del día anterior debe haber sido borrado
+        assert not intraday_file.exists(), "mancini_intraday.json de ayer debería haberse borrado"
+
 
 # ── stop_day ──────────────────────────────────────────────────────────────────
 
