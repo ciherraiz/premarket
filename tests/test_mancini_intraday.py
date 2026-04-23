@@ -78,6 +78,8 @@ def loaded_monitor(monitor, sample_plan):
 
 def test_intraday_state_roundtrip(intraday_path):
     """IntraDayState se serializa y deserializa correctamente."""
+    from datetime import date
+    today = date.today().isoformat()
     adj = PlanAdjustment(
         tweet_id="123",
         tweet_text="test tweet",
@@ -90,6 +92,7 @@ def test_intraday_state_roundtrip(intraday_path):
         processed_tweet_ids={"123", "456"},
         adjustments=[adj],
         last_check="2026-04-16T10:05:00",
+        fecha=today,
     )
     save_intraday_state(state, intraday_path)
     loaded = load_intraday_state(intraday_path)
@@ -99,6 +102,7 @@ def test_intraday_state_roundtrip(intraday_path):
     assert loaded.adjustments[0].tweet_id == "123"
     assert loaded.adjustments[0].adjustment_type == "LEVEL_UPDATE"
     assert loaded.last_check == "2026-04-16T10:05:00"
+    assert loaded.fecha == today
 
 
 def test_load_intraday_state_missing_file(tmp_path):
@@ -106,6 +110,53 @@ def test_load_intraday_state_missing_file(tmp_path):
     state = load_intraday_state(tmp_path / "nonexistent.json")
     assert state.processed_tweet_ids == set()
     assert state.adjustments == []
+
+
+def test_load_intraday_state_stale_date_resets(intraday_path):
+    """Estado de otro día se descarta → IDs limpios al cargar."""
+    stale = IntraDayState(
+        processed_tweet_ids={"old-tweet-1", "old-tweet-2"},
+        adjustments=[],
+        last_check="2026-04-22T10:00:00",
+        fecha="2026-04-22",  # ayer
+    )
+    save_intraday_state(stale, intraday_path)
+    loaded = load_intraday_state(intraday_path)
+
+    assert loaded.processed_tweet_ids == set()
+    assert loaded.adjustments == []
+    assert loaded.fecha == ""
+
+
+def test_load_intraday_state_same_date_keeps(intraday_path):
+    """Estado del mismo día se mantiene intacto."""
+    from datetime import date
+    today = date.today().isoformat()
+    state = IntraDayState(
+        processed_tweet_ids={"t1", "t2"},
+        adjustments=[],
+        fecha=today,
+    )
+    save_intraday_state(state, intraday_path)
+    loaded = load_intraday_state(intraday_path)
+
+    assert loaded.processed_tweet_ids == {"t1", "t2"}
+    assert loaded.fecha == today
+
+
+def test_load_intraday_state_no_fecha_field_preserved(intraday_path):
+    """Estado antiguo sin campo fecha (retrocompatibilidad) se carga sin resetear."""
+    import json
+    old_format = {
+        "processed_tweet_ids": ["t1"],
+        "adjustments": [],
+        "last_check": "",
+        # Sin 'fecha'
+    }
+    intraday_path.write_text(json.dumps(old_format), encoding="utf-8")
+    loaded = load_intraday_state(intraday_path)
+    assert loaded.processed_tweet_ids == {"t1"}
+    assert loaded.fecha == ""
 
 
 # ── Tests de _apply_adjustment ───────────────────────────────────

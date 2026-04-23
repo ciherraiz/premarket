@@ -254,16 +254,17 @@ class ManciniMonitor:
                 time.sleep(self.tweet_poll_interval)
                 continue
 
-            # Marcar como procesados SIEMPRE (con o sin plan)
-            for t in new_tweets:
-                self.intraday_state.processed_tweet_ids.add(t["id"])
-            self.save_state()
-
             if plan is None:
                 _log(f"Haiku no encontró plan nuevo — reintentando en {self.tweet_poll_interval // 60} min...")
                 append_scan_result("no_plan", len(new_tweets), False, "no plan", today_et)
                 time.sleep(self.tweet_poll_interval)
                 continue
+
+            # Marcar como procesados SOLO cuando hay plan confirmado
+            for t in new_tweets:
+                self.intraday_state.processed_tweet_ids.add(t["id"])
+            self.intraday_state.fecha = today_et
+            self.save_state()
 
             # 3. Merge con plan existente o guardar nuevo
             existing = load_plan(self.plan_path)
