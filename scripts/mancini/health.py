@@ -452,11 +452,21 @@ def start_day(skip_scan: bool = False, dry_run: bool = False) -> bool:
     # 3. Limpiar estado del día anterior
     print("  Limpiando estado anterior...")
     if not dry_run:
-        for path in [
-            OUTPUTS_DIR / "mancini_state.json",
-            OUTPUTS_DIR / "mancini_intraday.json",
-        ]:
-            path.unlink(missing_ok=True)
+        (OUTPUTS_DIR / "mancini_state.json").unlink(missing_ok=True)
+
+        # Solo borrar intraday si es de otro día — preservar processed_tweet_ids en reinicios intraday
+        intraday_path = OUTPUTS_DIR / "mancini_intraday.json"
+        if intraday_path.exists():
+            try:
+                import json as _json
+                _data = _json.loads(intraday_path.read_text(encoding="utf-8"))
+                if _data.get("fecha", "") != today:
+                    intraday_path.unlink(missing_ok=True)
+                else:
+                    print("  Estado intraday de hoy conservado (tweets procesados preservados).")
+            except Exception:
+                intraday_path.unlink(missing_ok=True)
+
         clear_pid()
         clear_stop_flag()
 
