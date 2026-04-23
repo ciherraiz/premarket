@@ -859,6 +859,21 @@ class ManciniMonitor:
         _log("Monitor arrancando...")
         self.load_state()
 
+        # Si el plan ya está en disco al arrancar, enviar chart inmediatamente
+        if self.plan:
+            _log("Plan existente cargado al arrancar")
+            self._log_plan_info()
+            price = self.poll_es()
+            notifier.notify_plan_loaded(
+                self.plan.to_dict(),
+                price=price,
+                session_start=self.session_start,
+                session_end=self.session_end,
+            )
+            if price:
+                notifier.notify_plan_chart(self.plan, price, self.detectors,
+                                           price_history=self.price_history)
+
         consecutive_errors = 0
         MAX_CONSECUTIVE_ERRORS = 5
 
