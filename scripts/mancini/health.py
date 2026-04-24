@@ -506,7 +506,7 @@ def start_day(skip_scan: bool = False, dry_run: bool = False) -> bool:
 
         # 6. Verificar arranque
         print("  Esperando PID file...", end=" ", flush=True)
-        if _wait_for_pid_file(timeout_s=30):
+        if _wait_for_pid_file(timeout_s=60):
             real_pid = read_pid()
             print(f"OK (PID {real_pid})")
         else:
@@ -653,7 +653,7 @@ def recover(dry_run: bool = False) -> SystemHealth:
         if not dry_run:
             clear_stop_flag()
             pid = _launch_monitor()
-            if _wait_for_pid_file(timeout_s=30):
+            if _wait_for_pid_file(timeout_s=60):
                 actions_taken.append(f"Monitor relanzado (PID {read_pid()})")
             else:
                 actions_taken.append("Monitor lanzado pero sin confirmación de PID")
