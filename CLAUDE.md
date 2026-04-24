@@ -72,10 +72,14 @@ cada 10 min si no lo tiene (`_scan_for_plan`), y clasifica tweets intraday
 nuevos cada 10 min una vez con plan (`check_intraday_updates`). No existe
 ni es necesaria ninguna tarea de scan externa corriendo en paralelo.
 
-El subcomando `start-day` es **idempotente**: si ya hay un monitor corriendo lo mata y arranca uno nuevo.
-No ejecutar `run_mancini.py monitor` directamente — bypasea la gestión de PID y crea instancias huérfanas.
+El subcomando `start-day` es **idempotente**: si el monitor ya está corriendo, no lo toca y retorna.
+Solo arranca el monitor si no está corriendo. No ejecutar `run_mancini.py monitor` directamente.
 
-Para reiniciar el monitor tras un deploy: ejecutar `monitor_start.bat`. Nada más.
+Para reiniciar el monitor tras un deploy (nuevo código):
+```
+uv run python scripts/mancini/run_mancini.py stop-day
+scripts\mancini\monitor_start.bat
+```
 
 ## Convenciones
 - Iterar siempre sobre `specs/` antes de modificar código

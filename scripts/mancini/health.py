@@ -223,7 +223,8 @@ class SystemHealth:
 
         overall = "✓ OK" if self.overall_ok else "✗ DEGRADADO — ejecutar: uv run python scripts/mancini/run_mancini.py recover"
 
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stdout, "reconfigure") and hasattr(sys.stdout, "buffer"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         print(
             f"\n=== Mancini System Health ==={nl}"
             f"Plan:       {plan_line}{nl}"
