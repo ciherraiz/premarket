@@ -23,11 +23,15 @@ Los subcomandos disponibles son:
 
 | Subcomando     | Tipo          | Descripción                              |
 |----------------|---------------|------------------------------------------|
-| `scan`         | one-shot      | Fetch tweets + parse + save/merge plan   |
+| `scan`         | one-shot      | Fetch tweets + parse + save/merge plan (uso manual o en start-day) |
 | `weekly-scan`  | one-shot      | Fetch Big Picture + parse + save weekly  |
-| `monitor`      | larga duración | Polling /ES cada 60s, espera plan si no existe, auto-para a las 16:00 ET |
+| `monitor`      | larga duración | Polling /ES cada 60s + scan de tweets integrado cada 10 min + updates intraday |
 | `status`       | one-shot      | Muestra estado actual                    |
 | `reset`        | one-shot      | Resetea estado para nuevo día            |
+
+**El monitor es autosuficiente**: integra el scan de tweets internamente
+(`_scan_for_plan()` y `check_intraday_updates()`). No se necesita ninguna
+tarea externa de scan corriendo en paralelo.
 
 ### Wrapper: batch files
 
@@ -47,28 +51,7 @@ weekly → `logs/mancini_weekly.log`.
 
 ## Tareas registradas en Task Scheduler
 
-### 1. ManciniScan (diario, entre semana)
-
-**Script**: `scripts/mancini/scan_start.bat`
-**Subcomando**: `run_mancini.py scan`
-**Ventana**: 13:00–22:00 CEST (07:00–16:00 ET) — cubre toda la sesión regular
-**Cadencia**: cada 10 minutos dentro de la ventana
-
-| Parámetro Task Scheduler | Valor |
-|---|---|
-| Nombre | `ManciniScan` |
-| Trigger | Lun-Vie, inicio 13:00 CEST, repetir cada 10 min durante 9h |
-| Acción | `scripts/mancini/scan_start.bat` |
-| Múltiples instancias | No iniciar nueva si ya hay una corriendo |
-
-El scan es idempotente: si no hay tweets nuevos, termina sin error y sin
-notificar (evita spam). Solo notifica a Telegram cuando el plan cambia.
-La ventana cubre toda la sesión regular para capturar actualizaciones
-intraday de Mancini.
-
-**Prerequisitos**: `cookies.json` (sesión X) y `ANTHROPIC_API_KEY` en `.env`
-
-### 2. ManciniMonitor (diario, entre semana)
+### 1. ManciniMonitor (diario, entre semana)
 
 **Script**: `scripts/mancini/monitor_start.bat`
 **Subcomando**: `run_mancini.py monitor`
@@ -83,12 +66,11 @@ intraday de Mancini.
 | Múltiples instancias | No iniciar nueva si ya hay una corriendo |
 
 El monitor arranca a las 09:00 CEST (apertura sesión europea) y empieza
-a pollear /ES inmediatamente (`SESSION_START_HOUR` = 03:00 ET). Esto
-permite capturar movimientos que ocurren durante la sesión europea,
-antes de la apertura RTH de EE.UU. Si no hay plan del día, **espera y
-reintenta** cada 10 min — el scan corre en paralelo y creará el plan
-cuando Mancini publique. En cuanto el plan aparece, el monitor lo carga
-y empieza a detectar patrones.
+a pollear /ES inmediatamente (`SESSION_START_HOUR` = 03:00 ET). Si no hay
+plan del día, **busca tweets de Mancini él mismo** cada 10 min hasta
+obtenerlo (`_scan_for_plan()`). Una vez con plan, detecta patrones y
+también clasifica tweets intraday nuevos (`check_intraday_updates()`) cada
+10 min. No se necesita ningún proceso de scan externo.
 
 **Session end**: el monitor se auto-finaliza a las 16:00 ET (`SESSION_END_HOUR`).
 
@@ -109,25 +91,7 @@ para alinearse con la apertura real de futuros y `--end 24` para cubrir
 la sesión nocturna hasta medianoche ET. El lunes a las 13:00 CEST arranca
 el monitor normal (`monitor_start.bat`) que cubre la sesión RTH.
 
-### 4. ManciniScanDomingo (domingos)
-
-**Script**: `scripts/mancini/scan_sunday.bat`
-**Subcomando**: `run_mancini.py scan`
-**Ventana**: 18:00–23:00 CEST domingo (12:00–17:00 ET)
-**Cadencia**: cada 10 minutos dentro de la ventana
-
-| Parámetro Task Scheduler | Valor |
-|---|---|
-| Nombre | `ManciniScanDomingo` |
-| Trigger | Domingos, inicio 18:00 CEST, repetir cada 10 min durante 5h |
-| Acción | `scripts/mancini/scan_sunday.bat` |
-| Múltiples instancias | No iniciar nueva si ya hay una corriendo |
-
-Mancini a veces publica niveles el domingo por la tarde para la sesión
-nocturna. Este scan cubre desde la apertura de futuros (18:00 ET) hasta
-las 23:00 CEST. Reutiliza el mismo subcomando `scan` que entre semana.
-
-### 5. ManciniWeeklyScan (fines de semana)
+### 4. ManciniWeeklyScan (fines de semana)
 
 **Script**: `scripts/mancini/weekly_scan_start.bat`
 **Subcomando**: `run_mancini.py weekly-scan`
@@ -192,20 +156,20 @@ pero no se ejecutan. No hay API de borrado, solo desactivación.
 ## Resumen visual — Día entre semana (horario CEST)
 
 ```
-09:00 ─── ManciniMonitor arranca (03:00 ET, sesión europea) ────
-13:00 ─── ManciniScan comienza (cada 10 min) ───────────────────
-  ...     Monitor pollea /ES, scan busca tweets de Mancini
+09:00 ─── ManciniMonitor arranca (start-day: scan + monitor) ───
+  ...     Monitor pollea /ES cada 60s
+  ...     Si sin plan: busca tweets cada 10 min (_scan_for_plan)
+  ...     Si con plan: clasifica tweets intraday cada 10 min
 15:30 ─── Apertura mercado (09:30 ET) ───────────────────────────
-22:00 ─── ManciniScan + ManciniMonitor terminan (16:00 ET) ──────
+22:00 ─── ManciniMonitor termina (16:00 ET) ─────────────────────
 ```
 
 ## Resumen visual — Fin de semana (horario CEST)
 
 ```
 18:00     ManciniWeeklyScan (Sab+Dom, cada 2h hasta 00:00)
-18:00 ─── ManciniScanDomingo comienza (Dom, cada 10 min) ───────
-23:00 ─── ManciniScanDomingo termina ───────────────────────────
-00:00     ManciniMonitorDomingo (Lun, 18:00-00:00 ET = sesión nocturna)
+00:00     ManciniMonitorDomingo arranca (18:00 ET, sesión nocturna)
+          Monitor busca tweets de Mancini internamente si los publica
 06:00 ─── ManciniMonitorDomingo termina (00:00 ET) ─────────────
 ```
 
@@ -216,13 +180,10 @@ pero no se ejecutan. No hay API de borrado, solo desactivación.
 | Fichero | Propósito |
 |---|---|
 | `scripts/mancini/run_mancini.py` | CLI con todos los subcomandos |
-| `scripts/mancini/scan_start.bat` | Wrapper para Task Scheduler (scan) |
-| `scripts/mancini/weekly_scan_start.bat` | Wrapper para Task Scheduler (weekly) |
 | `scripts/mancini/monitor_start.bat` | Wrapper para Task Scheduler (monitor L-V) |
-| `scripts/mancini/scan_sunday.bat` | Wrapper para Task Scheduler (scan dom) |
 | `scripts/mancini/monitor_sunday.bat` | Wrapper para Task Scheduler (monitor dom) |
-| `logs/mancini_monitor.log` | Output del monitor (polling, detectores, trades) |
-| `logs/mancini_scan.log` | Output de los scans diarios (tweets, plan) |
+| `scripts/mancini/weekly_scan_start.bat` | Wrapper para Task Scheduler (weekly) |
+| `logs/mancini_monitor.log` | Output del monitor (polling, tweets, detectores, trades) |
 | `logs/mancini_weekly.log` | Output de los scans semanales |
 | `logs/mancini_scans.jsonl` | Registro estructurado de cada scan (éxito/fallo) |
 
@@ -232,19 +193,23 @@ pero no se ejecutan. No hay API de borrado, solo desactivación.
 
 ### Listar tareas registradas
 
-**Usar PowerShell** (schtasks desde bash/git-bash no encuentra tareas en `\`):
+**Usar schtasks** (PowerShell Get-ScheduledTask puede no mostrar todas):
 
-```powershell
-Get-ScheduledTask | Where-Object { $_.TaskName -like '*Mancini*' } | Select-Object TaskName, State
-Get-ScheduledTask -TaskName 'ManciniScan' | Get-ScheduledTaskInfo
+```bash
+schtasks /query /fo LIST | grep -A2 "Mancini"
 ```
 
 ### Ejecutar manualmente
 
 ```bash
+# Arrancar/reiniciar el monitor (idempotente)
+scripts/mancini/monitor_start.bat
+
+# Forzar scan de tweets manualmente (sin lanzar monitor)
 uv run python scripts/mancini/run_mancini.py scan
+
+# Scan semanal
 uv run python scripts/mancini/run_mancini.py weekly-scan
-uv run python scripts/mancini/run_mancini.py monitor
 ```
 
 ### Eliminar tarea

@@ -165,19 +165,28 @@ class SystemHealth:
     active_trade: bool
     orphan_count: int
     overall_ok: bool
+    plan_stale: bool = False
 
     def print_summary(self) -> None:
         ok  = lambda b: "✓" if b else "✗"
         nl  = "\n"
 
-        plan_line = (
-            f"{ok(self.plan_ok)} {self.plan_fecha}  "
-            f"(upper={self.plan_upper} → {self.plan_targets_upper}"
-            + (f" | lower={self.plan_lower} → {self.plan_targets_lower}" if self.plan_lower else "")
-            + ")"
-            if self.plan_ok
-            else f"✗ NO HAY PLAN para hoy (último: {self.plan_fecha or 'ninguno'})"
-        )
+        if self.plan_ok:
+            plan_line = (
+                f"✓ {self.plan_fecha}  "
+                f"(upper={self.plan_upper} → {self.plan_targets_upper}"
+                + (f" | lower={self.plan_lower} → {self.plan_targets_lower}" if self.plan_lower else "")
+                + ")"
+            )
+        elif self.plan_stale:
+            plan_line = (
+                f"⚠ STALE ({self.plan_fecha})  "
+                f"(upper={self.plan_upper} → {self.plan_targets_upper}"
+                + (f" | lower={self.plan_lower} → {self.plan_targets_lower}" if self.plan_lower else "")
+                + ")  — fallback del día anterior, sin plan de hoy"
+            )
+        else:
+            plan_line = f"✗ NO HAY PLAN para hoy (último: {self.plan_fecha or 'ninguno'})"
 
         if self.monitor_running:
             uptime = ""
@@ -237,6 +246,7 @@ def check_health() -> SystemHealth:
     # Plan
     plan = load_plan()
     plan_ok = bool(plan and plan.fecha == today)
+    plan_stale = bool(plan and plan.fecha != today and not plan_ok)
     plan_fecha = plan.fecha if plan else None
     plan_upper = plan.key_level_upper if plan else None
     plan_targets_upper = plan.targets_upper if plan else []
@@ -268,7 +278,7 @@ def check_health() -> SystemHealth:
     orphan_count = len(get_orphan_pids())
 
     overall_ok = (
-        plan_ok
+        (plan_ok or plan_stale)  # stale cuenta como operativo
         and monitor_running
         and last_quote_ok
         and orphan_count == 0
@@ -276,6 +286,7 @@ def check_health() -> SystemHealth:
 
     return SystemHealth(
         plan_ok=plan_ok,
+        plan_stale=plan_stale,
         plan_fecha=plan_fecha,
         plan_upper=plan_upper,
         plan_targets_upper=plan_targets_upper,
