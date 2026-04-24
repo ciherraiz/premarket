@@ -64,8 +64,13 @@ Usar siempre los `.bat` de `scripts/mancini/` — gestionan PID file y huérfano
 | Acción | Comando |
 |--------|---------|
 | Arrancar/reiniciar monitor | `scripts\mancini\monitor_start.bat` → llama a `run_mancini.py start-day` (idempotente: mata huérfanos, arranca uno limpio) |
-| Scan tweets (lunes–viernes) | `scripts\mancini\scan_start.bat` |
-| Scan domingo (weekly) | `scripts\mancini\monitor_sunday.bat` / `scan_sunday.bat` |
+| Scan semanal (fin de semana) | `scripts\mancini\weekly_scan_start.bat` |
+| Scan manual de tweets | `uv run python scripts/mancini/run_mancini.py scan` |
+
+El monitor integra el scan de tweets internamente: busca el plan en tweets
+cada 10 min si no lo tiene (`_scan_for_plan`), y clasifica tweets intraday
+nuevos cada 10 min una vez con plan (`check_intraday_updates`). No existe
+ni es necesaria ninguna tarea de scan externa corriendo en paralelo.
 
 El subcomando `start-day` es **idempotente**: si ya hay un monitor corriendo lo mata y arranca uno nuevo.
 No ejecutar `run_mancini.py monitor` directamente — bypasea la gestión de PID y crea instancias huérfanas.

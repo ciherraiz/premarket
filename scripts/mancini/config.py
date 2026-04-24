@@ -31,6 +31,7 @@ class DailyPlan:
     notes: str = ""
     created_at: str = ""
     updated_at: str = ""
+    is_stale: bool = False  # True si es plan de otro día usado como fallback provisional
 
     def __post_init__(self):
         now = datetime.now(timezone.utc).isoformat()
@@ -64,21 +65,23 @@ class DailyPlan:
         d = asdict(self)
         if d["chop_zone"] is not None:
             d["chop_zone"] = list(d["chop_zone"])
-        return d
+        return d  # is_stale incluido para uso en notificaciones
 
     @classmethod
     def from_dict(cls, d: dict) -> DailyPlan:
         if d.get("chop_zone") is not None:
             d["chop_zone"] = tuple(d["chop_zone"])
         d.pop("session_mode", None)  # retrocompatibilidad con planes guardados anteriormente
+        d.pop("is_stale", None)      # no leer del JSON — siempre False al cargar
         return cls(**d)
 
 
 def save_plan(plan: DailyPlan, path: Path = PLAN_PATH) -> None:
-    """Persiste el plan en JSON."""
+    """Persiste el plan en JSON (is_stale no se guarda — es estado en memoria)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(plan.to_dict(), indent=2, ensure_ascii=False),
-                    encoding="utf-8")
+    d = plan.to_dict()
+    d.pop("is_stale", None)
+    path.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def load_plan(path: Path = PLAN_PATH) -> DailyPlan | None:

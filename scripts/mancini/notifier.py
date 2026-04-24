@@ -25,6 +25,7 @@ def notify_plan_loaded(plan: dict,
     (distancia al nivel inferior y si hay setup posible).
     Si session_start/session_end se proporcionan, incluye la línea de monitor.
     """
+    is_stale = plan.get("is_stale", False)
     fecha = _esc(plan.get("fecha", "N/A"))
     upper = _esc(plan.get("key_level_upper", "N/A"))
     lower_val = plan.get("key_level_lower")
@@ -36,8 +37,15 @@ def notify_plan_loaded(plan: dict,
     chop = plan.get("chop_zone")
     chop_line = f"🔄 *Chop zone:* {_esc(chop[0])} \\- {_esc(chop[1])}" if chop else ""
 
+    if is_stale:
+        header = f"⚠️ *Fallback plan {fecha} \\(sin plan de hoy\\)*"
+        stale_footer = "📅 _Niveles del día anterior\\. Se actualizará cuando Mancini publique\\._"
+    else:
+        header = f"🎯 *Mancini Plan \\| {fecha}*"
+        stale_footer = ""
+
     lines = [
-        f"🎯 *Mancini Plan \\| {fecha}*",
+        header,
         "",
         f"🟢 *Upper:* {upper} → {targets_up}",
         f"🔴 *Lower:* {lower} → {targets_down}",
@@ -60,6 +68,9 @@ def notify_plan_loaded(plan: dict,
 
     if notes:
         lines += ["", f'💬 {_esc(notes)}']
+
+    if stale_footer:
+        lines += ["", stale_footer]
 
     if session_start is not None and session_end is not None:
         lines.append("")

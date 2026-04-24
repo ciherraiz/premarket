@@ -85,6 +85,50 @@ def _log(msg: str) -> None:
     print(f"[mancini {ts}] {msg}", flush=True)
 
 
+def _active_levels(plan: DailyPlan, state_path: Path = STATE_PATH) -> list[float]:
+    """Niveles del plan que no estaban en DONE/EXPIRED en el estado guardado."""
+    yesterday_detectors = load_detectors(state_path)
+    done_levels = {
+        d.level for d in yesterday_detectors
+        if d.state in (State.DONE, State.EXPIRED)
+    }
+    levels = []
+    if plan.key_level_upper is not None and plan.key_level_upper not in done_levels:
+        levels.append(plan.key_level_upper)
+    if plan.key_level_lower is not None and plan.key_level_lower not in done_levels:
+        levels.append(plan.key_level_lower)
+    return levels
+
+
+def _should_use_stale_plan(plan: DailyPlan | None, price: float | None,
+                           state_path: Path = STATE_PATH) -> bool:
+    """
+    Decide si usar el plan de ayer como fallback provisional.
+
+    Condiciones:
+    - El plan existe y es de ayer (no más antiguo).
+    - El precio está dentro de CONTEXT_ALERT_PTS de al menos un nivel activo
+      (no gastado: no en DONE ni EXPIRED ayer).
+    """
+    if plan is None or price is None:
+        return False
+
+    from datetime import date
+    today = date.today()
+    try:
+        plan_date = date.fromisoformat(plan.fecha)
+    except ValueError:
+        return False
+    if (today - plan_date).days != 1:
+        return False
+
+    for level in _active_levels(plan, state_path):
+        if abs(price - level) <= CONTEXT_ALERT_PTS:
+            return True
+
+    return False
+
+
 class ManciniMonitor:
     """Orquesta polling, detección y gestión de trades."""
 
@@ -120,7 +164,7 @@ class ManciniMonitor:
         self._last_tweet_check: float = 0
         self._level_contexts: dict[float, str] = {}  # level → último contexto conocido
 
-    def load_state(self) -> None:
+    def load_state(self, current_price: float | None = None) -> None:
         """Carga plan, weekly y detectores desde disco."""
         self.plan = load_plan(self.plan_path)
         self.weekly = load_weekly(self.weekly_path)
@@ -129,8 +173,15 @@ class ManciniMonitor:
         if self.plan:
             today_et = _now_et().strftime("%Y-%m-%d")
             if self.plan.fecha != today_et:
-                _log(f"Plan descartado: fecha {self.plan.fecha} != hoy {today_et}")
+                stale_candidate = self.plan
                 self.plan = None
+                # Intentar usar el plan de ayer como fallback si el precio está en zona de interés
+                if _should_use_stale_plan(stale_candidate, current_price, self.state_path):
+                    stale_candidate.is_stale = True
+                    self.plan = stale_candidate
+                    _log(f"Usando plan de {stale_candidate.fecha} como fallback (sin plan de hoy, precio en zona de interés)")
+                else:
+                    _log(f"Plan descartado: fecha {stale_candidate.fecha} != hoy {today_et}")
 
         if self.plan:
             self.trade_manager.fecha = self.plan.fecha
@@ -139,7 +190,16 @@ class ManciniMonitor:
         self.intraday_state = load_intraday_state(self.intraday_path)
 
         self.detectors = load_detectors(self.state_path)
-        if not self.detectors and self.plan:
+        if self.plan and self.plan.is_stale:
+            # Con plan stale: ignorar detectores guardados (pueden ser DONE del día anterior)
+            # y crear solo los que corresponden a niveles activos
+            active = _active_levels(self.plan, self.state_path)
+            self.detectors = [
+                FailedBreakdownDetector(level=lvl,
+                                        side="upper" if lvl == self.plan.key_level_upper else "lower")
+                for lvl in active
+            ]
+        elif not self.detectors and self.plan:
             self._init_detectors()
 
     def _init_detectors(self) -> None:
@@ -214,11 +274,11 @@ class ManciniMonitor:
                 return False
 
             # 1. Intentar cargar plan existente de disco (otro proceso pudo crearlo)
-            self.load_state()
-            if self.plan:
+            price = self.poll_es()
+            self.load_state(current_price=price)
+            if self.plan and not self.plan.is_stale:
                 _log("Plan de hoy encontrado en disco")
                 self._log_plan_info()
-                price = self.poll_es()
                 notifier.notify_plan_loaded(
                     self.plan.to_dict(),
                     price=price,
@@ -229,6 +289,16 @@ class ManciniMonitor:
                     notifier.notify_plan_chart(self.plan, price, self.detectors,
                                               price_history=self.price_history)
                 return True
+
+            # Con plan stale: seguir buscando el de hoy, pero el monitor ya está operativo
+            if self.plan and self.plan.is_stale:
+                notifier.notify_plan_loaded(
+                    self.plan.to_dict(),
+                    price=price,
+                    session_start=self.session_start,
+                    session_end=self.session_end,
+                )
+                return True  # el loop principal tomará el control; reintentará scan en cada ciclo
 
             # 2. Fetch tweets y parsear
             try:
@@ -845,6 +915,57 @@ class ManciniMonitor:
         else:
             _log(f"Weekly: no cargado (sesgo={bias})")
 
+    def _fetch_todays_plan(self) -> DailyPlan | None:
+        """Intento único de fetch+parse de tweets para obtener el plan de hoy.
+
+        Usado por el loop cuando hay plan stale activo: no bloquea, retorna
+        None si no hay tweets nuevos o Haiku no encontró plan.
+        """
+        from scripts.mancini.tweet_fetcher import fetch_mancini_tweets
+        from scripts.mancini.tweet_parser import parse_tweets_to_plan
+        from scripts.mancini.logger import append_scan_result
+
+        today_et = _now_et().strftime("%Y-%m-%d")
+
+        # Comprobar primero si ya hay plan en disco (scan externo pudo crearlo)
+        existing = load_plan(self.plan_path)
+        if existing and existing.fecha == today_et:
+            return existing
+
+        try:
+            tweets = fetch_mancini_tweets(max_tweets=20)
+        except Exception as e:
+            _log(f"Error fetching tweets (stale retry): {e}")
+            return None
+
+        if not tweets:
+            return None
+
+        new_tweets = [t for t in tweets if t["id"] not in self.intraday_state.processed_tweet_ids]
+        if not new_tweets:
+            return None
+
+        try:
+            plan = parse_tweets_to_plan(new_tweets, today_et)
+        except Exception as e:
+            _log(f"Error parseando tweets (stale retry): {e}")
+            append_scan_result("parse_error", len(new_tweets), False, str(e), today_et)
+            return None
+
+        if plan is None:
+            append_scan_result("no_plan", len(new_tweets), False, "no plan", today_et)
+            return None
+
+        for t in new_tweets:
+            self.intraday_state.processed_tweet_ids.add(t["id"])
+        self.intraday_state.fecha = today_et
+
+        save_plan(plan, self.plan_path)
+        append_scan_result("success", len(new_tweets), True, "", today_et)
+        _log("Plan de hoy extraído de tweets!")
+        self._log_plan_info()
+        return plan
+
     def _wait_for_plan(self) -> bool:
         """Alias de _scan_for_plan para compatibilidad con tests."""
         return self._scan_for_plan()
@@ -900,7 +1021,7 @@ class ManciniMonitor:
                         time.sleep(self.tweet_poll_interval)
                         continue
 
-                    # Si no hay plan, buscarlo en tweets de Mancini
+                    # Si no hay plan (ni siquiera stale), buscarlo en tweets de Mancini
                     if not self.plan:
                         if not self._scan_for_plan():
                             break
@@ -913,16 +1034,39 @@ class ManciniMonitor:
                         continue
 
                     ctx_parts = []
+                    stale_tag = " [STALE]" if self.plan.is_stale else ""
                     for det in self.detectors:
                         dist = price - det.level
                         ctx = compute_level_context(price, det.level, det.state)
                         ctx_parts.append(f"{det.side}={det.level}({dist:+.0f}pts/{ctx})")
-                    _log(f"ES={price:.2f} | {' | '.join(ctx_parts)}")
+                    _log(f"ES={price:.2f}{stale_tag} | {' | '.join(ctx_parts)}")
                     self.process_tick(price)
 
-                    # Clasificar tweets intraday nuevos (cada tweet_poll_interval)
+                    # Si el plan es stale, buscar plan de hoy en cada ciclo de tweet polling
                     now_ts = time.time()
-                    if (self.plan
+                    if self.plan.is_stale and now_ts - self._last_tweet_check >= self.tweet_poll_interval:
+                        self._last_tweet_check = now_ts
+                        _log("Plan stale activo — buscando plan de hoy en tweets...")
+                        fresh_plan = self._fetch_todays_plan()
+                        if fresh_plan:
+                            _log(f"Plan de hoy obtenido — descartando fallback de {self.plan.fecha}")
+                            self.detectors = []  # resetear antes de inicializar con plan nuevo
+                            self.plan = fresh_plan
+                            self._plan_mtime = self.plan_path.stat().st_mtime if self.plan_path.exists() else 0
+                            self._init_detectors()
+                            self.save_state()
+                            notifier.notify_plan_loaded(
+                                fresh_plan.to_dict(),
+                                price=price,
+                                session_start=self.session_start,
+                                session_end=self.session_end,
+                            )
+                            if price:
+                                notifier.notify_plan_chart(self.plan, price, self.detectors,
+                                                           price_history=self.price_history)
+
+                    # Clasificar tweets intraday nuevos (solo con plan real, no stale)
+                    elif (not self.plan.is_stale
                             and now_ts - self._last_tweet_check >= self.tweet_poll_interval):
                         self._last_tweet_check = now_ts
                         self.check_intraday_updates()
