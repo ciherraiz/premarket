@@ -114,24 +114,29 @@ def notify_signal(level: float, price: float, entry: float,
                   alignment: str = "") -> bool:
     """Alerta: señal de entrada — failed breakdown confirmado."""
     risk = abs(entry - stop)
-    targets_str = ", ".join(_esc(str(t)) for t in targets)
-    reward_1 = abs(targets[0] - entry) if targets else 0
+
+    rr_lines = []
+    for i, t in enumerate(targets, 1):
+        reward = abs(t - entry)
+        rr = f"1:{reward/risk:.1f}" if risk > 0 else "N/A"
+        rr_lines.append(f"  T{i} {_esc(str(t))} → {_esc(rr)}")
+    rr_str = "\n".join(rr_lines)
 
     lines = [
-        "🟢 *FAILED BREAKDOWN \\— SEÑAL*",
+        "🟢 *FAILED BREAKDOWN — SEÑAL*",
         "",
         f"📍 Nivel: {_esc(level)} \\| Reclaim: {_esc(price)}",
         f"📉 Breakdown low: {_esc(breakdown_low)}",
         "",
         f"▶️ *Entry:* {_esc(entry)}",
         f"🛑 *Stop:* {_esc(stop)} \\(\\-{_esc(f'{risk:.0f}')} pts\\)",
-        f"🎯 *Targets:* {targets_str}",
-        f"📊 R:R \\= 1:{_esc(f'{reward_1/risk:.1f}') if risk > 0 else 'N/A'}",
+        f"🎯 *Targets \\(R:R\\):*",
+        rr_str,
     ]
 
     if alignment == "MISALIGNED":
         lines.append("")
-        lines.append("⚠️ *Contra sesgo semanal \\— solo T1*")
+        lines.append("⚠️ *Contra sesgo semanal — solo T1*")
     elif alignment == "ALIGNED":
         lines.append("")
         lines.append("✅ *Alineado con Big Picture*")
