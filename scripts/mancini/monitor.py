@@ -35,7 +35,8 @@ from scripts.mancini.detector import (
     STATE_PATH,
 )
 from scripts.mancini.trade_manager import TradeManager, TradeStatus, calc_stop
-from scripts.mancini.logger import append_trade, append_adjustment, append_gate_decision
+from scripts.mancini.logger import append_trade, append_signal, append_adjustment, append_gate_decision
+from scripts.mancini.signal_tracker import FailedBreakdownSignal, _load_scores
 from scripts.mancini import notifier
 
 ET = ZoneInfo("America/New_York")
@@ -163,6 +164,7 @@ class ManciniMonitor:
         self._plan_mtime: float = 0
         self._last_tweet_check: float = 0
         self._level_contexts: dict[float, str] = {}  # level → último contexto conocido
+        self._active_signals: dict[float, FailedBreakdownSignal] = {}  # level → señal activa
 
     def load_state(self, current_price: float | None = None) -> None:
         """Carga plan, weekly y detectores desde disco."""
@@ -430,6 +432,24 @@ class ManciniMonitor:
             events.append(te)
             self._handle_trade_event(te)
 
+        # 3. Trackear señales sin trade (gate rechazó o modo manual)
+        resolved = []
+        for level, signal in self._active_signals.items():
+            if signal.trade_id is not None or signal.status != "detected":
+                continue
+            if signal.t1_price is not None and price >= signal.t1_price:
+                signal.confirm(ts)
+                append_signal(signal)
+                resolved.append(level)
+                _log(f"Señal {signal.signal_id[:8]} confirmada (sin trade) — T1={signal.t1_price}")
+            elif price <= signal.stop_price:
+                signal.invalidate(ts)
+                append_signal(signal)
+                resolved.append(level)
+                _log(f"Señal {signal.signal_id[:8]} invalidada (sin trade) — stop={signal.stop_price}")
+        for level in resolved:
+            del self._active_signals[level]
+
         return events
 
     def _track_level_context(self, price: float,
@@ -499,6 +519,26 @@ class ManciniMonitor:
 
             # ── Execution Gate ──
             stop_price = calc_stop(direction, price, breakdown_low)
+
+            # Crear señal (antes del gate, independiente de si se opera)
+            d_score, v_score = _load_scores()
+            signal = FailedBreakdownSignal(
+                detected_at=ts,
+                level=t.level,
+                direction=direction,
+                breakdown_depth_pts=breakdown_depth_pts,
+                acceptance_pauses=acceptance_pauses,
+                acceptance_max_above_level=max_above_level,
+                recovery_velocity_pts_min=velocity,
+                time_quality=time_quality,
+                alignment=alignment,
+                d_score=d_score,
+                v_score=v_score,
+                t1_price=targets[0] if targets else None,
+                stop_price=stop_price,
+            )
+            self._active_signals[t.level] = signal
+
             should_execute, gate_decision = self._evaluate_gate(
                 price, t.level, breakdown_low, direction,
                 stop_price, targets, alignment, ts,
@@ -508,6 +548,11 @@ class ManciniMonitor:
                 recovery_velocity_pts_min=velocity,
                 time_quality=time_quality,
             )
+
+            # Registrar decisión del gate en la señal
+            if gate_decision:
+                signal.gate_execute = gate_decision.execute
+                signal.gate_reasoning = gate_decision.reasoning
 
             if not should_execute:
                 _log(f"Trade descartado por gate/trader")
@@ -528,6 +573,10 @@ class ManciniMonitor:
                 if gate_decision:
                     trade.gate_decision = gate_decision.to_dict()
                     trade.execution_mode = "auto" if gate_decision.execute else "manual_confirm"
+
+                # Enlazar trade con la señal
+                if t.level in self._active_signals:
+                    self._active_signals[t.level].trade_id = trade.id
 
                 # Marcar detector como activo
                 for d in self.detectors:
@@ -556,6 +605,13 @@ class ManciniMonitor:
 
         return event
 
+    def _find_signal_for_trade(self, trade_id: str) -> tuple[float, "FailedBreakdownSignal"] | tuple[None, None]:
+        """Busca una señal activa por trade_id."""
+        for level, signal in self._active_signals.items():
+            if signal.trade_id == trade_id:
+                return level, signal
+        return None, None
+
     def _handle_trade_event(self, event: dict) -> None:
         """Maneja un evento del trade manager."""
         if event["type"] == "TARGET_HIT":
@@ -564,6 +620,16 @@ class ManciniMonitor:
                 f"Target {idx + 1} alcanzado: {event['target_price']}, "
                 f"stop {event['old_stop']} → {event['new_stop']}"
             )
+
+            # Confirmar señal al alcanzar T1
+            if idx == 0:
+                level, signal = self._find_signal_for_trade(event["trade_id"])
+                if signal:
+                    signal.confirm(event["timestamp"])
+                    append_signal(signal)
+                    del self._active_signals[level]
+                    _log(f"Señal {signal.signal_id[:8]} confirmada — T1 alcanzado")
+
             # Sincronizar trailing stop con TastyTrade
             trade = self._find_trade(event["trade_id"])
             if trade and self.order_executor and trade.stop_order_id:
@@ -593,6 +659,16 @@ class ManciniMonitor:
             trade = self._find_trade(event["trade_id"])
             if trade:
                 append_trade(trade)
+
+                # Invalidar señal si el stop se tocó antes de T1
+                if event["reason"] == "STOP" and trade.targets_hit == 0:
+                    level, signal = self._find_signal_for_trade(event["trade_id"])
+                    if signal:
+                        signal.invalidate(event["timestamp"])
+                        append_signal(signal)
+                        del self._active_signals[level]
+                        _log(f"Señal {signal.signal_id[:8]} invalidada — stop hit sin T1")
+
                 notifier.notify_trade_closed(
                     reason=event["reason"],
                     entry=trade.entry_price,
@@ -892,6 +968,15 @@ class ManciniMonitor:
         for d in self.detectors:
             if d.state not in (State.DONE, State.EXPIRED):
                 d.mark_expired()
+
+        # Expirar señales sin resolver
+        eod_ts = datetime.now(timezone.utc).isoformat()
+        for level, signal in list(self._active_signals.items()):
+            if signal.status == "detected":
+                signal.expire(eod_ts)
+                append_signal(signal)
+                _log(f"Señal {signal.signal_id[:8]} expirada — fin de sesión")
+        self._active_signals.clear()
 
         # Resumen
         total_pnl = sum(

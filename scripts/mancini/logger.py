@@ -11,6 +11,7 @@ from pathlib import Path
 from scripts.mancini.trade_manager import Trade
 
 TRADES_LOG_PATH = Path("logs/mancini_trades.jsonl")
+SIGNALS_LOG_PATH = Path("logs/mancini_signals.jsonl")
 SCAN_LOG_PATH = Path("logs/mancini_scans.jsonl")
 ADJUSTMENTS_LOG_PATH = Path("logs/mancini_adjustments.jsonl")
 GATE_LOG_PATH = Path("logs/mancini_gate.jsonl")
@@ -70,6 +71,24 @@ def append_gate_decision(decision, level: float, price: float,
     }
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def append_signal(signal, path: Path = SIGNALS_LOG_PATH) -> None:
+    """Añade una señal Failed Breakdown resuelta al fichero JSONL."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(signal.to_dict(), ensure_ascii=False) + "\n")
+
+
+def read_signals(path: Path = SIGNALS_LOG_PATH) -> list[dict]:
+    """Lee todas las señales del fichero JSONL."""
+    if not path.exists():
+        return []
+    signals = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            signals.append(json.loads(line))
+    return signals
 
 
 def append_trade(trade: Trade, path: Path = TRADES_LOG_PATH) -> None:
