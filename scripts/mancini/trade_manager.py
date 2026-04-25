@@ -65,11 +65,13 @@ class Trade:
     alignment: str = ""  # "ALIGNED" | "NEUTRAL" | "MISALIGNED"
     # Trailing stop
     targets_hit: int = 0  # número de targets alcanzados
+    mfe_pts: float = 0.0  # Maximum Favorable Excursion en puntos
     # Órdenes TastyTrade
     entry_order_id: str | None = None
     stop_order_id: str | None = None
     gate_decision: dict | None = None  # {execute, reasoning, risk_factors}
     execution_mode: str = ""  # "auto" | "manual_confirm" | "rejected"
+    dry_run: bool = True  # True = órdenes dry-run, False = live
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -102,7 +104,8 @@ class TradeManager:
     def open_trade(self, direction: str, entry_price: float,
                    breakdown_low: float, targets: list[float],
                    timestamp: str | None = None,
-                   alignment: str = "") -> Trade | None:
+                   alignment: str = "",
+                   dry_run: bool = True) -> Trade | None:
         """
         Abre un nuevo trade.
 
@@ -142,6 +145,7 @@ class TradeManager:
             targets=sorted_targets,
             breakdown_low=breakdown_low,
             alignment=alignment,
+            dry_run=dry_run,
         )
         self.trades.append(trade)
         return trade
@@ -167,6 +171,12 @@ class TradeManager:
 
         ts = timestamp or datetime.now(timezone.utc).isoformat()
         events = []
+
+        # Actualizar MFE
+        pnl = (price - trade.entry_price if trade.direction == "LONG"
+               else trade.entry_price - price)
+        if pnl > trade.mfe_pts:
+            trade.mfe_pts = round(pnl, 2)
 
         # Check stop
         if self._is_stop_hit(trade, price):

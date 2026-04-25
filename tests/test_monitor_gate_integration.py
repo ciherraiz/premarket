@@ -84,7 +84,10 @@ def mock_notifier():
 
 @pytest.fixture(autouse=True)
 def mock_loggers():
-    with patch("scripts.mancini.monitor.append_trade"), \
+    with patch("scripts.mancini.monitor.append_trade_open"), \
+         patch("scripts.mancini.monitor.append_trade_target_hit"), \
+         patch("scripts.mancini.monitor.append_trade_close"), \
+         patch("scripts.mancini.monitor.append_order_result"), \
          patch("scripts.mancini.monitor.append_gate_decision"):
         yield
 

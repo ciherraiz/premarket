@@ -35,7 +35,10 @@ from scripts.mancini.detector import (
     STATE_PATH,
 )
 from scripts.mancini.trade_manager import TradeManager, TradeStatus, calc_stop
-from scripts.mancini.logger import append_trade, append_adjustment, append_gate_decision
+from scripts.mancini.logger import (
+    append_trade_open, append_trade_target_hit, append_trade_close,
+    append_order_result, append_adjustment, append_gate_decision,
+)
 from scripts.mancini import notifier
 
 ET = ZoneInfo("America/New_York")
@@ -163,6 +166,9 @@ class ManciniMonitor:
         self._plan_mtime: float = 0
         self._last_tweet_check: float = 0
         self._level_contexts: dict[float, str] = {}  # level → último contexto conocido
+        self._last_runner_update: float = 0.0
+        self._last_runner_price: float = 0.0
+        self._last_notified_mfe: float = 0.0
 
     def load_state(self, current_price: float | None = None) -> None:
         """Carga plan, weekly y detectores desde disco."""
@@ -515,6 +521,7 @@ class ManciniMonitor:
                 return event
 
             # Proponer trade
+            dry_run = self.order_executor.dry_run if self.order_executor else True
             trade = self.trade_manager.open_trade(
                 direction=direction,
                 entry_price=price,
@@ -522,6 +529,7 @@ class ManciniMonitor:
                 targets=targets,
                 timestamp=ts,
                 alignment=alignment,
+                dry_run=dry_run,
             )
             if trade:
                 # Guardar decisión del gate en el trade
@@ -536,6 +544,17 @@ class ManciniMonitor:
 
                 # ── Lanzar orden en TastyTrade ──
                 self._place_trade_orders(trade, direction)
+
+                # ── Log de apertura ──
+                now_et = _now_et()
+                session_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+                minutes_from_open = max(0, int((now_et - session_open).total_seconds() / 60))
+                append_trade_open(trade, level=t.level, minutes_from_open=minutes_from_open)
+
+                # Reset runner update tracking
+                self._last_runner_update = 0.0
+                self._last_runner_price = price
+                self._last_notified_mfe = 0.0
 
                 notifier.notify_signal(
                     level=t.level, price=price, entry=trade.entry_price,
@@ -566,14 +585,17 @@ class ManciniMonitor:
             )
             # Sincronizar trailing stop con TastyTrade
             trade = self._find_trade(event["trade_id"])
-            if trade and self.order_executor and trade.stop_order_id:
-                result = self.order_executor.update_stop(
-                    trade.stop_order_id, event["new_stop"]
-                )
-                if result.success:
-                    _log(f"Stop actualizado en TastyTrade: {event['new_stop']}")
-                else:
-                    _log(f"Error actualizando stop en TastyTrade: {result.error}")
+            if trade:
+                append_trade_target_hit(trade, event)
+                if self.order_executor and trade.stop_order_id:
+                    result = self.order_executor.update_stop(
+                        trade.stop_order_id, event["new_stop"]
+                    )
+                    append_order_result(trade.id, "update_stop", result, self.es_symbol)
+                    if result.success:
+                        _log(f"Stop actualizado en TastyTrade: {event['new_stop']}")
+                    else:
+                        _log(f"Error actualizando stop en TastyTrade: {result.error}")
 
             notifier.notify_target_hit(event)
             notifier.notify_plan_chart(
@@ -592,7 +614,7 @@ class ManciniMonitor:
             # Buscar el trade y loggearlo
             trade = self._find_trade(event["trade_id"])
             if trade:
-                append_trade(trade)
+                append_trade_close(trade)
                 notifier.notify_trade_closed(
                     reason=event["reason"],
                     entry=trade.entry_price,
@@ -715,19 +737,51 @@ class ManciniMonitor:
             return
 
         entry_result = self.order_executor.place_entry(direction, self.es_symbol)
+        append_order_result(trade.id, "entry", entry_result, self.es_symbol)
         if entry_result.success:
             trade.entry_order_id = entry_result.order_id
             stop_result = self.order_executor.place_stop(
                 direction, self.es_symbol, trade.stop_price
             )
+            append_order_result(trade.id, "stop", stop_result, self.es_symbol)
             if stop_result.success:
                 trade.stop_order_id = stop_result.order_id
             else:
                 _log(f"Error lanzando stop: {stop_result.error}")
             mode = "dry-run" if entry_result.dry_run else "LIVE"
             _log(f"Orden {mode}: entry OK, stop {'OK' if stop_result.success else 'FAIL'}")
+            notifier.notify_order_result(
+                "entry", entry_result,
+                trade_info=f"Nivel {trade.breakdown_low} | ES {self.es_symbol}",
+            )
         else:
             _log(f"Error lanzando orden entry: {entry_result.error}")
+            notifier.notify_order_result("entry", entry_result)
+
+    def _maybe_send_runner_update(self, price: float) -> None:
+        """Envía update periódico al trader si hay trade activo y ha pasado el intervalo."""
+        import os
+        trade = self.trade_manager.active_trade()
+        if trade is None:
+            return
+
+        now = time.time()
+        interval = int(os.getenv("MANCINI_RUNNER_UPDATE_INTERVAL", "30")) * 60
+        price_moved = abs(price - self._last_runner_price) >= 1.0
+
+        # Trigger por MFE en múltiplo de 10 pts
+        mfe_floor = int(trade.mfe_pts / 10) * 10
+        mfe_milestone = mfe_floor > 0 and mfe_floor > self._last_notified_mfe
+
+        if not price_moved and not mfe_milestone and (now - self._last_runner_update) < interval:
+            return
+
+        if mfe_milestone:
+            self._last_notified_mfe = mfe_floor
+
+        self._last_runner_update = now
+        self._last_runner_price = price
+        notifier.notify_runner_update(trade, price)
 
     # ── Intraday tweet updates ─────────────────────────────────────
 
@@ -1041,6 +1095,7 @@ class ManciniMonitor:
                         ctx_parts.append(f"{det.side}={det.level}({dist:+.0f}pts/{ctx})")
                     _log(f"ES={price:.2f}{stale_tag} | {' | '.join(ctx_parts)}")
                     self.process_tick(price)
+                    self._maybe_send_runner_update(price)
 
                     # Si el plan es stale, buscar plan de hoy en cada ciclo de tweet polling
                     now_ts = time.time()
