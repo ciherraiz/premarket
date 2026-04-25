@@ -335,3 +335,81 @@ def notify_session_summary(fecha: str, trades_count: int,
         f"{pnl_emoji} *P&L total: {pnl_sign}{_esc(f'{total_pnl:.1f}')} pts*",
     ])
     return send_telegram(msg)
+
+
+def notify_order_result(order_type: str, result, trade_info: str = "") -> bool:
+    """Alerta: resultado de una orden TastyTrade (entry/stop/update)."""
+    mode = "DRY\\-RUN" if result.dry_run else "🔴 LIVE"
+    status = "✅" if result.success else "❌"
+
+    lines = [f"{status} *Orden {_esc(order_type.upper())}* — {mode}"]
+    if trade_info:
+        lines += ["", _esc(trade_info)]
+
+    if result.success:
+        if result.order_id:
+            lines.append(f"🆔 Order ID: {_esc(result.order_id)}")
+        bp = (result.details or {}).get("buying_power_effect")
+        if bp:
+            lines.append(f"💰 Buying power: {_esc(str(bp))}")
+    else:
+        lines.append(f"⚠️ Error: {_esc(result.error or 'desconocido')}")
+
+    return send_telegram("\n".join(lines))
+
+
+def notify_runner_update(trade, current_price: float) -> bool:
+    """Update periódico del runner activo: P&L abierto, MFE, stop y próximo target."""
+    from datetime import datetime, timezone
+
+    pnl = (current_price - trade.entry_price
+           if trade.direction == "LONG"
+           else trade.entry_price - current_price)
+    pnl_sign = "\\+" if pnl >= 0 else ""
+    pnl_emoji = "🟢" if pnl > 0 else ("🔴" if pnl < 0 else "⚪")
+    trend = "📈" if pnl >= 0 else "📉"
+
+    try:
+        entry_dt = datetime.fromisoformat(trade.entry_time)
+        if entry_dt.tzinfo is None:
+            entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+        elapsed_min = int((datetime.now(timezone.utc) - entry_dt).total_seconds() / 60)
+    except Exception:
+        elapsed_min = 0
+
+    next_targets = trade.targets[trade.targets_hit:]
+    next_target = next_targets[0] if next_targets else None
+    remaining = next_targets[1:] if len(next_targets) > 1 else []
+
+    lines = [
+        "📊 *Runner activo — update*",
+        "",
+        f"▶️ Entry: {_esc(trade.entry_price)} \\| Actual: {_esc(current_price)}",
+        f"⏱ En trade: {_esc(elapsed_min)} min",
+        f"{trend} *P&L abierto: {pnl_sign}{_esc(f'{pnl:.1f}')} pts* {pnl_emoji}",
+    ]
+
+    if trade.mfe_pts > 0:
+        lines.append(f"🏆 Máximo: \\+{_esc(f'{trade.mfe_pts:.1f}')} pts")
+
+    stop_risk = abs(current_price - trade.stop_price)
+    lines += [
+        "",
+        f"🛑 Stop: {_esc(trade.stop_price)} \\| Riesgo: {_esc(f'{stop_risk:.1f}')} pts",
+    ]
+
+    if next_target is not None:
+        t_idx = trade.targets_hit + 1
+        dist = abs(next_target - current_price)
+        lines.append(
+            f"🎯 Siguiente: T{t_idx} {_esc(next_target)} \\| Faltan: {_esc(f'{dist:.1f}')} pts"
+        )
+
+    if remaining:
+        rest_str = " ".join(
+            f"T{trade.targets_hit + 2 + i}\\({_esc(t)}\\)"
+            for i, t in enumerate(remaining)
+        )
+        lines.append(f"   Pendientes: {rest_str}")
+
+    return send_telegram("\n".join(lines))
