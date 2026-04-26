@@ -113,18 +113,33 @@ def build_auto_levels(
     monthly_df: pd.DataFrame | None,
     es_spot: float,
     gex_levels: dict,
+    spx_spot: float | None = None,
 ) -> AutoLevels:
-    """Ensambla todos los niveles técnicos en un AutoLevels."""
+    """
+    Ensambla todos los niveles técnicos en un AutoLevels.
+
+    spx_spot: cierre SPX cash de la misma sesión que es_spot.
+    Si se proporciona, los niveles calculados desde SPX (daily, weekly, monthly, gex)
+    se multiplican por el ratio es_spot/spx_spot para convertirlos a términos /ES,
+    el mismo sistema de referencia que usa Mancini.
+    Los round numbers no se ajustan porque ya se calculan desde es_spot.
+    """
+    # Ratio de conversión SPX cash → /ES. Sin spx_spot, no se ajusta.
+    basis = (es_spot / spx_spot) if spx_spot and spx_spot > 0 else 1.0
+
+    def adj(v: float) -> float:
+        return round(v * basis, 2)
+
     levels: list[TechnicalLevel] = []
 
     # ── Grupo A: niveles diarios ────────────────────────────────────────
     if len(daily_ohlcv) >= 2:
         prev = daily_ohlcv[-2]  # penúltimo = día anterior completo
-        pdh, pdl, pdc = prev["High"], prev["Low"], prev["Close"]
+        pdh, pdl, pdc = adj(prev["High"]), adj(prev["Low"]), adj(prev["Close"])
         levels += [
-            TechnicalLevel(value=round(pdh, 2), label="PDH", group="daily", priority=2),
-            TechnicalLevel(value=round(pdl, 2), label="PDL", group="daily", priority=2),
-            TechnicalLevel(value=round(pdc, 2), label="PDC", group="daily", priority=2),
+            TechnicalLevel(value=pdh, label="PDH", group="daily", priority=2),
+            TechnicalLevel(value=pdl, label="PDL", group="daily", priority=2),
+            TechnicalLevel(value=pdc, label="PDC", group="daily", priority=2),
         ]
         for label, val in calc_pivot_points(pdh, pdl, pdc).items():
             levels.append(TechnicalLevel(value=val, label=f"{label}_D", group="daily", priority=2))
@@ -132,11 +147,13 @@ def build_auto_levels(
     # ── Grupo B: niveles semanales ──────────────────────────────────────
     if weekly_df is not None and len(weekly_df) >= 2:
         pw = weekly_df.iloc[-2]  # semana anterior completa
-        pwh, pwl, pwc = float(pw["High"]), float(pw["Low"]), float(pw["Close"])
+        pwh = adj(float(pw["High"]))
+        pwl = adj(float(pw["Low"]))
+        pwc = adj(float(pw["Close"]))
         levels += [
-            TechnicalLevel(value=round(pwh, 2), label="PWH", group="weekly", priority=1),
-            TechnicalLevel(value=round(pwl, 2), label="PWL", group="weekly", priority=1),
-            TechnicalLevel(value=round(pwc, 2), label="PWC", group="weekly", priority=1),
+            TechnicalLevel(value=pwh, label="PWH", group="weekly", priority=1),
+            TechnicalLevel(value=pwl, label="PWL", group="weekly", priority=1),
+            TechnicalLevel(value=pwc, label="PWC", group="weekly", priority=1),
         ]
         pivots_w = calc_pivot_points(pwh, pwl, pwc)
         levels.append(TechnicalLevel(value=pivots_w["PP"], label="PP_W", group="weekly", priority=1))
@@ -147,12 +164,12 @@ def build_auto_levels(
     if monthly_df is not None and len(monthly_df) >= 2:
         pm = monthly_df.iloc[-2]  # mes anterior completo
         levels += [
-            TechnicalLevel(value=round(float(pm["High"]), 2), label="PMH", group="monthly", priority=1),
-            TechnicalLevel(value=round(float(pm["Low"]),  2), label="PML", group="monthly", priority=1),
-            TechnicalLevel(value=round(float(pm["Close"]), 2), label="PMC", group="monthly", priority=1),
+            TechnicalLevel(value=adj(float(pm["High"])),  label="PMH", group="monthly", priority=1),
+            TechnicalLevel(value=adj(float(pm["Low"])),   label="PML", group="monthly", priority=1),
+            TechnicalLevel(value=adj(float(pm["Close"])), label="PMC", group="monthly", priority=1),
         ]
 
-    # ── Grupo D: round numbers ──────────────────────────────────────────
+    # ── Grupo D: round numbers (ya en /ES — no se ajustan) ─────────────
     for rnd in calc_round_numbers(es_spot):
         levels.append(TechnicalLevel(
             value=rnd,
@@ -165,7 +182,7 @@ def build_auto_levels(
     for key, label in [("flip_level", "FLIP"), ("put_wall", "PUT_WALL"), ("call_wall", "CALL_WALL")]:
         val = gex_levels.get(key)
         if val is not None:
-            levels.append(TechnicalLevel(value=round(float(val), 2), label=label, group="gex", priority=1))
+            levels.append(TechnicalLevel(value=adj(float(val)), label=label, group="gex", priority=1))
 
     levels = _dedup_levels(levels)
     levels.sort(key=lambda l: l.value, reverse=True)
@@ -251,6 +268,11 @@ def calculate_and_save(
     weekly_df = fetch_weekly_ohlc()
     monthly_df = fetch_monthly_ohlc()
 
-    auto = build_auto_levels(daily_ohlcv, weekly_df, monthly_df, float(es_spot), gex_levels)
+    spx_spot = premarket.get("spx_spot")
+    auto = build_auto_levels(
+        daily_ohlcv, weekly_df, monthly_df,
+        float(es_spot), gex_levels,
+        spx_spot=float(spx_spot) if spx_spot else None,
+    )
     save_auto_levels(auto, output_path)
     return auto
