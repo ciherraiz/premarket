@@ -190,6 +190,38 @@ class TestBuildAutoLevels:
         auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {})
         assert auto.fecha == str(date.today())
 
+    def test_basis_correction_aplica_ratio(self):
+        # SPX=5360, ES=5380 → ratio=1.00373
+        # PDH en SPX = 5380 → PDH ajustado = 5380 * (5380/5360) ≈ 5400.1
+        auto_adj = build_auto_levels(DAILY_OHLCV, None, None, 5380.0, {}, spx_spot=5360.0)
+        auto_raw = build_auto_levels(DAILY_OHLCV, None, None, 5380.0, {}, spx_spot=None)
+
+        pdh_adj = next(l for l in auto_adj.levels if l.label == "PDH")
+        pdh_raw = next(l for l in auto_raw.levels if l.label == "PDH")
+
+        assert pdh_adj.value > pdh_raw.value  # ajustado debe ser mayor (ES > SPX)
+        ratio = 5380.0 / 5360.0
+        assert pdh_adj.value == pytest.approx(pdh_raw.value * ratio, abs=0.1)
+
+    def test_basis_correction_no_afecta_round_numbers(self):
+        # Los round numbers deben ser múltiplos exactos de 25 centrados en es_spot,
+        # independientemente de spx_spot (no se multiplican por el ratio de basis)
+        es_spot = 5380.0
+        auto_adj = build_auto_levels(DAILY_OHLCV, None, None, es_spot, {}, spx_spot=5360.0)
+
+        for lvl in auto_adj.levels:
+            if lvl.group == "round":
+                assert lvl.value % 25 == 0.0, f"{lvl.value} no es múltiplo de 25"
+                assert abs(lvl.value - es_spot) <= es_spot * 0.03 + 25
+
+    def test_basis_sin_spx_spot_no_modifica_valores(self):
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {}, spx_spot=None)
+        auto_explicit_1 = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {})
+
+        vals1 = [l.value for l in auto.levels]
+        vals2 = [l.value for l in auto_explicit_1.levels]
+        assert vals1 == vals2
+
 
 # ── load/save_auto_levels ──────────────────────────────────────────────
 
