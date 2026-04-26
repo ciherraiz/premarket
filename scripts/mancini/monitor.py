@@ -38,6 +38,7 @@ from scripts.mancini.trade_manager import TradeManager, TradeStatus, calc_stop
 from scripts.mancini.logger import append_trade, append_signal, append_adjustment, append_gate_decision
 from scripts.mancini.signal_tracker import FailedBreakdownSignal, _load_scores
 from scripts.mancini import notifier
+from scripts.mancini.auto_levels import load_auto_levels, AUTO_LEVELS_PATH
 
 ET = ZoneInfo("America/New_York")
 
@@ -130,6 +131,41 @@ def _should_use_stale_plan(plan: DailyPlan | None, price: float | None,
     return False
 
 
+def _auto_levels_to_plan(auto, price: float) -> DailyPlan | None:
+    """
+    Selecciona los dos niveles técnicos autónomos más cercanos al precio
+    (uno por encima, uno por debajo) y construye un DailyPlan provisional.
+    Solo usa niveles priority=1 dentro de ±50 pts del precio.
+    Retorna None si no hay suficientes candidatos.
+    """
+    candidates = [l for l in auto.levels if l.priority == 1 and abs(l.value - price) <= 50]
+    above = [l for l in candidates if l.value > price]
+    below = [l for l in candidates if l.value < price]
+
+    if not above or not below:
+        return None
+
+    upper = min(above, key=lambda l: l.value - price)   # más cercano por encima
+    lower = min(below, key=lambda l: price - l.value)   # más cercano por debajo
+
+    plan = DailyPlan(
+        fecha=auto.fecha,
+        raw_tweets=[f"[AUTO] Calculado desde {upper.label} y {lower.label}"],
+        key_level_upper=upper.value,
+        targets_upper=[],
+        key_level_lower=lower.value,
+        targets_lower=[],
+        notes=(
+            f"Niveles técnicos autónomos. "
+            f"Upper={upper.label}({upper.value}), Lower={lower.label}({lower.value}). "
+            f"Sin tweet de Mancini."
+        ),
+    )
+    plan.is_stale = True
+    plan.is_auto_levels = True
+    return plan
+
+
 class ManciniMonitor:
     """Orquesta polling, detección y gestión de trades."""
 
@@ -184,6 +220,19 @@ class ManciniMonitor:
                     _log(f"Usando plan de {stale_candidate.fecha} como fallback (sin plan de hoy, precio en zona de interés)")
                 else:
                     _log(f"Plan descartado: fecha {stale_candidate.fecha} != hoy {today_et}")
+
+        # Nivel 3: auto-levels como fallback si no hay plan ni stale
+        if self.plan is None and current_price is not None:
+            _today_et = _now_et().strftime("%Y-%m-%d")
+            auto = load_auto_levels(AUTO_LEVELS_PATH)
+            if auto and auto.fecha == _today_et:
+                auto_plan = _auto_levels_to_plan(auto, current_price)
+                if auto_plan is not None:
+                    self.plan = auto_plan
+                    _log(
+                        f"Usando auto-levels calculados como fallback "
+                        f"(upper={auto_plan.key_level_upper}, lower={auto_plan.key_level_lower})"
+                    )
 
         if self.plan:
             self.trade_manager.fecha = self.plan.fecha
