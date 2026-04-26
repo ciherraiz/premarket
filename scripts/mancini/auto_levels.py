@@ -16,8 +16,10 @@ from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
+from zoneinfo import ZoneInfo
 
 AUTO_LEVELS_PATH = Path("outputs/mancini_auto_levels.json")
+_ET = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -62,6 +64,49 @@ def fetch_monthly_ohlc(symbol: str = "^GSPC", bars: int = 4) -> pd.DataFrame | N
             df.columns = df.columns.droplevel(1)
         df = df[["Open", "High", "Low", "Close"]].dropna()
         return df.tail(bars)
+    except Exception:
+        return None
+
+
+def fetch_overnight_ohlc(symbol: str = "ES=F") -> tuple[float, float] | None:
+    """
+    Calcula el ONH/ONL de la sesión Globex actual (18:00 ET ayer – 09:29 ET hoy).
+
+    Descarga barras horarias de /ES via yfinance y filtra las que caen dentro
+    del rango overnight. Retorna (onh, onl) en términos /ES (sin basis adjustment)
+    o None si no hay barras suficientes o falla la descarga.
+    """
+    try:
+        df = yf.download(symbol, period="2d", interval="1h",
+                         auto_adjust=True, progress=False)
+        if df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df = df[["High", "Low"]].dropna()
+
+        # Convertir index a ET
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        df.index = df.index.tz_convert(_ET)
+
+        now_et = datetime.now(_ET)
+        today_et = now_et.date()
+        yesterday_et = (now_et - pd.Timedelta(days=1)).date()
+
+        # Ventana overnight: 18:00 ET ayer → 09:29 ET hoy
+        window_start = datetime(yesterday_et.year, yesterday_et.month, yesterday_et.day,
+                                18, 0, 0, tzinfo=_ET)
+        window_end   = datetime(today_et.year, today_et.month, today_et.day,
+                                9, 29, 0, tzinfo=_ET)
+
+        overnight = df[(df.index >= window_start) & (df.index <= window_end)]
+        if overnight.empty:
+            return None
+
+        onh = round(float(overnight["High"].max()), 2)
+        onl = round(float(overnight["Low"].min()), 2)
+        return onh, onl
     except Exception:
         return None
 
@@ -114,6 +159,7 @@ def build_auto_levels(
     es_spot: float,
     gex_levels: dict,
     spx_spot: float | None = None,
+    overnight: tuple[float, float] | None = None,
 ) -> AutoLevels:
     """
     Ensambla todos los niveles técnicos en un AutoLevels.
@@ -122,7 +168,9 @@ def build_auto_levels(
     Si se proporciona, los niveles calculados desde SPX (daily, weekly, monthly, gex)
     se multiplican por el ratio es_spot/spx_spot para convertirlos a términos /ES,
     el mismo sistema de referencia que usa Mancini.
-    Los round numbers no se ajustan porque ya se calculan desde es_spot.
+    Los round numbers y overnight no se ajustan porque ya están en términos /ES.
+
+    overnight: tupla (onh, onl) del rango Globex. Ya en /ES — no se aplica basis.
     """
     # Ratio de conversión SPX cash → /ES. Sin spx_spot, no se ajusta.
     basis = (es_spot / spx_spot) if spx_spot and spx_spot > 0 else 1.0
@@ -183,6 +231,12 @@ def build_auto_levels(
         val = gex_levels.get(key)
         if val is not None:
             levels.append(TechnicalLevel(value=adj(float(val)), label=label, group="gex", priority=1))
+
+    # ── Grupo F: Overnight High/Low (ya en /ES — no se ajustan) ────────
+    if overnight is not None:
+        onh, onl = overnight
+        levels.append(TechnicalLevel(value=onh, label="ONH", group="overnight", priority=2))
+        levels.append(TechnicalLevel(value=onl, label="ONL", group="overnight", priority=2))
 
     levels = _dedup_levels(levels)
     levels.sort(key=lambda l: l.value, reverse=True)
@@ -267,12 +321,14 @@ def calculate_and_save(
 
     weekly_df = fetch_weekly_ohlc()
     monthly_df = fetch_monthly_ohlc()
+    overnight = fetch_overnight_ohlc()
 
     spx_spot = premarket.get("spx_spot")
     auto = build_auto_levels(
         daily_ohlcv, weekly_df, monthly_df,
         float(es_spot), gex_levels,
         spx_spot=float(spx_spot) if spx_spot else None,
+        overnight=overnight,
     )
     save_auto_levels(auto, output_path)
     return auto
