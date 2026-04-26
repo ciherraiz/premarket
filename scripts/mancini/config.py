@@ -31,7 +31,8 @@ class DailyPlan:
     notes: str = ""
     created_at: str = ""
     updated_at: str = ""
-    is_stale: bool = False  # True si es plan de otro día usado como fallback provisional
+    is_stale: bool = False       # True si es plan de otro día usado como fallback provisional
+    is_auto_levels: bool = False  # True si fue generado desde niveles técnicos autónomos
 
     def __post_init__(self):
         now = datetime.now(timezone.utc).isoformat()
@@ -72,7 +73,8 @@ class DailyPlan:
         if d.get("chop_zone") is not None:
             d["chop_zone"] = tuple(d["chop_zone"])
         d.pop("session_mode", None)  # retrocompatibilidad con planes guardados anteriormente
-        d.pop("is_stale", None)      # no leer del JSON — siempre False al cargar
+        d.pop("is_stale", None)       # no leer del JSON — siempre False al cargar
+        d.pop("is_auto_levels", None)  # ídem
         return cls(**d)
 
 
@@ -81,6 +83,7 @@ def save_plan(plan: DailyPlan, path: Path = PLAN_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     d = plan.to_dict()
     d.pop("is_stale", None)
+    d.pop("is_auto_levels", None)
     path.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
 
 

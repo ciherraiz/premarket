@@ -180,6 +180,18 @@ def run_premarket_phase(out: Path) -> dict:
     })
     print("[history] Registro premarket guardado.")
 
+    # Calcular niveles técnicos autónomos (best-effort — no aborta el pipeline)
+    try:
+        from scripts.mancini.auto_levels import calculate_and_save as _calc_auto
+        _auto = _calc_auto(
+            data_path=str(out / "data.json"),
+            indicators_path=str(out / "indicators.json"),
+        )
+        if _auto:
+            print(f"[auto-levels] {len(_auto.levels)} niveles calculados → outputs/mancini_auto_levels.json")
+    except Exception as _e:
+        print(f"[auto-levels] WARN: {_e}", file=sys.stderr)
+
     return premarket_indicators
 
 
@@ -352,6 +364,16 @@ def main():
         print_scorecard(indicators)
         if args.notify:
             _call_notify("premarket")
+            # Enviar auto-levels calculados durante run_premarket_phase
+            try:
+                from scripts.mancini.auto_levels import load_auto_levels
+                from scripts.mancini.notifier import notify_auto_levels
+                _auto = load_auto_levels()
+                if _auto and _auto.fecha == indicators.get("fecha", ""):
+                    notify_auto_levels(_auto)
+                    print("[notify] Auto-levels enviados a Telegram.")
+            except Exception as _e:
+                print(f"[notify] WARN auto-levels: {_e}", file=sys.stderr)
 
     elif args.phase == "open":
         open_ind = run_open_phase(out, args.window)

@@ -1,0 +1,256 @@
+"""
+Niveles técnicos autónomos para /ES — calculados sin tweets de Mancini.
+
+Calcula Prior Day/Week/Month H/L/C, pivot points clásicos, round numbers
+y reutiliza niveles GEX ya calculados. Sirve como fallback cuando no hay
+plan de Mancini disponible.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from dataclasses import dataclass, asdict
+from datetime import date, datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+import yfinance as yf
+
+AUTO_LEVELS_PATH = Path("outputs/mancini_auto_levels.json")
+
+
+@dataclass
+class TechnicalLevel:
+    value: float
+    label: str    # "PDH", "PWL", "PP_D", "R1_W", "RND_5350", "FLIP", etc.
+    group: str    # "daily", "weekly", "monthly", "round", "gex"
+    priority: int  # 1 (alta) a 3 (baja)
+
+
+@dataclass
+class AutoLevels:
+    fecha: str                    # YYYY-MM-DD
+    spot: float                   # precio /ES al calcular
+    levels: list[TechnicalLevel]  # ordenados por value desc
+    calculated_at: str            # ISO timestamp
+
+
+def fetch_weekly_ohlc(symbol: str = "^GSPC", bars: int = 4) -> pd.DataFrame | None:
+    """Descarga barras semanales via yfinance. Retorna DataFrame con OHLC o None si falla."""
+    try:
+        df = yf.download(symbol, period=f"{bars * 7 + 14}d", interval="1wk",
+                         auto_adjust=True, progress=False)
+        if df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df = df[["Open", "High", "Low", "Close"]].dropna()
+        return df.tail(bars)
+    except Exception:
+        return None
+
+
+def fetch_monthly_ohlc(symbol: str = "^GSPC", bars: int = 4) -> pd.DataFrame | None:
+    """Descarga barras mensuales via yfinance. Retorna DataFrame con OHLC o None si falla."""
+    try:
+        df = yf.download(symbol, period=f"{bars * 31 + 31}d", interval="1mo",
+                         auto_adjust=True, progress=False)
+        if df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df = df[["Open", "High", "Low", "Close"]].dropna()
+        return df.tail(bars)
+    except Exception:
+        return None
+
+
+def calc_pivot_points(high: float, low: float, close: float) -> dict[str, float]:
+    """Calcula PP, R1, R2, S1, S2 clásicos desde OHLC previo."""
+    pp = (high + low + close) / 3
+    r1 = 2 * pp - low
+    r2 = pp + (high - low)
+    s1 = 2 * pp - high
+    s2 = pp - (high - low)
+    return {
+        "PP": round(pp, 2),
+        "R1": round(r1, 2),
+        "R2": round(r2, 2),
+        "S1": round(s1, 2),
+        "S2": round(s2, 2),
+    }
+
+
+def calc_round_numbers(spot: float, step: int = 25, pct: float = 0.03) -> list[float]:
+    """Retorna múltiplos de `step` dentro del rango spot ± pct*spot."""
+    margin = spot * pct
+    lo = spot - margin
+    hi = spot + margin
+    first = math.ceil(lo / step) * step
+    levels = []
+    v = first
+    while v <= hi:
+        levels.append(round(float(v), 2))
+        v += step
+    return levels
+
+
+def _dedup_levels(levels: list[TechnicalLevel], threshold: float = 2.0) -> list[TechnicalLevel]:
+    """Elimina niveles muy próximos (<= threshold pts), conservando el de mayor prioridad."""
+    # Ordenar por prioridad ascendente (1 = mayor), valor secundario
+    sorted_lvls = sorted(levels, key=lambda l: (l.priority, l.value))
+    result: list[TechnicalLevel] = []
+    for lvl in sorted_lvls:
+        if not any(abs(lvl.value - r.value) <= threshold for r in result):
+            result.append(lvl)
+    return result
+
+
+def build_auto_levels(
+    daily_ohlcv: list[dict],
+    weekly_df: pd.DataFrame | None,
+    monthly_df: pd.DataFrame | None,
+    es_spot: float,
+    gex_levels: dict,
+) -> AutoLevels:
+    """Ensambla todos los niveles técnicos en un AutoLevels."""
+    levels: list[TechnicalLevel] = []
+
+    # ── Grupo A: niveles diarios ────────────────────────────────────────
+    if len(daily_ohlcv) >= 2:
+        prev = daily_ohlcv[-2]  # penúltimo = día anterior completo
+        pdh, pdl, pdc = prev["High"], prev["Low"], prev["Close"]
+        levels += [
+            TechnicalLevel(value=round(pdh, 2), label="PDH", group="daily", priority=2),
+            TechnicalLevel(value=round(pdl, 2), label="PDL", group="daily", priority=2),
+            TechnicalLevel(value=round(pdc, 2), label="PDC", group="daily", priority=2),
+        ]
+        for label, val in calc_pivot_points(pdh, pdl, pdc).items():
+            levels.append(TechnicalLevel(value=val, label=f"{label}_D", group="daily", priority=2))
+
+    # ── Grupo B: niveles semanales ──────────────────────────────────────
+    if weekly_df is not None and len(weekly_df) >= 2:
+        pw = weekly_df.iloc[-2]  # semana anterior completa
+        pwh, pwl, pwc = float(pw["High"]), float(pw["Low"]), float(pw["Close"])
+        levels += [
+            TechnicalLevel(value=round(pwh, 2), label="PWH", group="weekly", priority=1),
+            TechnicalLevel(value=round(pwl, 2), label="PWL", group="weekly", priority=1),
+            TechnicalLevel(value=round(pwc, 2), label="PWC", group="weekly", priority=1),
+        ]
+        pivots_w = calc_pivot_points(pwh, pwl, pwc)
+        levels.append(TechnicalLevel(value=pivots_w["PP"], label="PP_W", group="weekly", priority=1))
+        levels.append(TechnicalLevel(value=pivots_w["R1"], label="R1_W", group="weekly", priority=1))
+        levels.append(TechnicalLevel(value=pivots_w["S1"], label="S1_W", group="weekly", priority=1))
+
+    # ── Grupo C: niveles mensuales ──────────────────────────────────────
+    if monthly_df is not None and len(monthly_df) >= 2:
+        pm = monthly_df.iloc[-2]  # mes anterior completo
+        levels += [
+            TechnicalLevel(value=round(float(pm["High"]), 2), label="PMH", group="monthly", priority=1),
+            TechnicalLevel(value=round(float(pm["Low"]),  2), label="PML", group="monthly", priority=1),
+            TechnicalLevel(value=round(float(pm["Close"]), 2), label="PMC", group="monthly", priority=1),
+        ]
+
+    # ── Grupo D: round numbers ──────────────────────────────────────────
+    for rnd in calc_round_numbers(es_spot):
+        levels.append(TechnicalLevel(
+            value=rnd,
+            label=f"RND_{int(rnd)}",
+            group="round",
+            priority=3,
+        ))
+
+    # ── Grupo E: GEX ───────────────────────────────────────────────────
+    for key, label in [("flip_level", "FLIP"), ("put_wall", "PUT_WALL"), ("call_wall", "CALL_WALL")]:
+        val = gex_levels.get(key)
+        if val is not None:
+            levels.append(TechnicalLevel(value=round(float(val), 2), label=label, group="gex", priority=1))
+
+    levels = _dedup_levels(levels)
+    levels.sort(key=lambda l: l.value, reverse=True)
+
+    return AutoLevels(
+        fecha=str(date.today()),
+        spot=round(es_spot, 2),
+        levels=levels,
+        calculated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
+
+
+def load_auto_levels(path: Path = AUTO_LEVELS_PATH) -> AutoLevels | None:
+    """Lee mancini_auto_levels.json. Retorna None si no existe o hay error."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        levels = [TechnicalLevel(**lvl) for lvl in data.get("levels", [])]
+        return AutoLevels(
+            fecha=data["fecha"],
+            spot=data["spot"],
+            levels=levels,
+            calculated_at=data["calculated_at"],
+        )
+    except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def save_auto_levels(levels: AutoLevels, path: Path = AUTO_LEVELS_PATH) -> None:
+    """Serializa y escribe mancini_auto_levels.json."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "fecha": levels.fecha,
+        "spot": levels.spot,
+        "levels": [asdict(l) for l in levels.levels],
+        "calculated_at": levels.calculated_at,
+    }
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def calculate_and_save(
+    data_path: str = "outputs/data.json",
+    indicators_path: str = "outputs/indicators.json",
+    output_path: Path = AUTO_LEVELS_PATH,
+) -> AutoLevels | None:
+    """
+    Lee data.json e indicators.json, calcula todos los niveles,
+    persiste en mancini_auto_levels.json y retorna el objeto.
+    Retorna None si faltan datos esenciales.
+    """
+    try:
+        data = json.loads(Path(data_path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+    # Extraer OHLCV diario (soporta formato antiguo y nuevo con namespace)
+    premarket = data.get("premarket", data)
+    spx_ohlcv = premarket.get("spx_ohlcv", {})
+    daily_ohlcv = spx_ohlcv.get("ohlcv") or []
+
+    # Precio spot — en orden de preferencia
+    es_spot = (
+        (premarket.get("es") or {}).get("es_premarket")
+        or (premarket.get("es_prev") or {}).get("es_prev_close")
+        or premarket.get("spx_spot")
+    )
+    if es_spot is None:
+        return None
+
+    # GEX levels desde indicators.json
+    gex_levels: dict = {}
+    try:
+        ind = json.loads(Path(indicators_path).read_text(encoding="utf-8"))
+        pre_ind = ind.get("premarket", ind)
+        ng = pre_ind.get("net_gex", {})
+        gex_levels = {
+            "flip_level": ng.get("flip_level"),
+            "put_wall":   ng.get("put_wall"),
+            "call_wall":  ng.get("call_wall"),
+        }
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    weekly_df = fetch_weekly_ohlc()
+    monthly_df = fetch_monthly_ohlc()
+
+    auto = build_auto_levels(daily_ohlcv, weekly_df, monthly_df, float(es_spot), gex_levels)
+    save_auto_levels(auto, output_path)
+    return auto

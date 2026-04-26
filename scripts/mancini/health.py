@@ -498,6 +498,23 @@ def start_day(skip_scan: bool = False, dry_run: bool = False) -> bool:
     else:
         print("  Scan omitido (--skip-scan)")
 
+    # 4b. Calcular auto-levels si no existen o son de otro día
+    try:
+        from scripts.mancini.auto_levels import load_auto_levels, calculate_and_save as _calc_auto, AUTO_LEVELS_PATH
+        existing_auto = load_auto_levels(AUTO_LEVELS_PATH)
+        if not existing_auto or existing_auto.fecha != today:
+            print("  Calculando niveles técnicos autónomos...")
+            if not dry_run:
+                _auto = _calc_auto()
+                if _auto:
+                    print(f"  Auto-levels calculados: {len(_auto.levels)} niveles")
+                else:
+                    print("  ⚠️  Auto-levels: datos insuficientes (data.json/indicators.json no disponibles)")
+        else:
+            print(f"  Auto-levels de hoy ya existen ({len(existing_auto.levels)} niveles). Sin recalcular.")
+    except Exception as _e:
+        print(f"  ⚠️  Auto-levels WARN: {_e}")
+
     # 5. Lanzar monitor
     print("  Lanzando monitor...")
     if not dry_run:

@@ -26,6 +26,7 @@ def notify_plan_loaded(plan: dict,
     Si session_start/session_end se proporcionan, incluye la línea de monitor.
     """
     is_stale = plan.get("is_stale", False)
+    is_auto = plan.get("is_auto_levels", False)
     fecha = _esc(plan.get("fecha", "N/A"))
     upper = _esc(plan.get("key_level_upper", "N/A"))
     lower_val = plan.get("key_level_lower")
@@ -37,7 +38,10 @@ def notify_plan_loaded(plan: dict,
     chop = plan.get("chop_zone")
     chop_line = f"🔄 *Chop zone:* {_esc(chop[0])} \\- {_esc(chop[1])}" if chop else ""
 
-    if is_stale:
+    if is_auto:
+        header = f"📐 *Sin plan de Mancini \\— niveles técnicos autónomos \\| {fecha}*"
+        stale_footer = "⚠️ _Sin targets conocidos\\. Se actualizará cuando Mancini publique\\._"
+    elif is_stale:
         header = f"⚠️ *Fallback plan {fecha} \\(sin plan de hoy\\)*"
         stale_footer = "📅 _Niveles del día anterior\\. Se actualizará cuando Mancini publique\\._"
     else:
@@ -80,6 +84,45 @@ def notify_plan_loaded(plan: dict,
 
     msg = "\n".join(lines)
     return send_telegram(msg.strip())
+
+
+def notify_auto_levels(auto) -> bool:
+    """Alerta: niveles técnicos autónomos calculados — para comparar con el plan de Mancini."""
+    fecha = _esc(auto.fecha)
+    spot = auto.spot
+
+    # Separar niveles priority <= 2 (semanales, mensuales, GEX, diarios) — excluir round numbers
+    relevant = [l for l in auto.levels if l.priority <= 2]
+
+    above = [l for l in relevant if l.value > spot]
+    below = [l for l in relevant if l.value < spot]
+
+    def fmt_level(l) -> str:
+        group_tag = {"gex": "GEX", "weekly": "sem", "monthly": "mes", "daily": "día"}.get(l.group, l.group)
+        return f"  {_esc(f'{l.value:.2f}')} _{_esc(l.label)}_ \\({group_tag}\\)"
+
+    lines = [
+        f"📐 *Niveles técnicos \\| {fecha}*",
+        "",
+        f"📊 ES referencia: *{_esc(f'{spot:.2f}')}*",
+        "",
+    ]
+
+    if above:
+        lines.append("🔴 *Por encima:*")
+        for l in above[:6]:  # máx 6 para no saturar
+            lines.append(fmt_level(l))
+        lines.append("")
+
+    if below:
+        lines.append("🟢 *Por debajo:*")
+        for l in below[:6]:
+            lines.append(fmt_level(l))
+        lines.append("")
+
+    lines.append("_Compara con el plan de Mancini cuando publique\\._")
+
+    return send_telegram("\n".join(lines).strip())
 
 
 def notify_approaching_level(level: float, price: float, distance: float) -> bool:
