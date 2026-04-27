@@ -90,11 +90,11 @@ def mock_loggers():
 
 
 def _trigger_signal(monitor):
-    """Helper: dispara breakdown → recovery → signal en nivel inferior (6781)."""
-    monitor.process_tick(6776, f"{TS_BASE}00:00Z")
-    monitor.process_tick(6783, f"{TS_BASE}01:00Z")
-    monitor.process_tick(6784, f"{TS_BASE}02:00Z")
-    events = monitor.process_tick(6785, f"{TS_BASE}03:00Z")
+    """Helper: dispara breakdown → recovery → signal en nivel superior (6809)."""
+    monitor.process_tick(6800, f"{TS_BASE}00:00Z")
+    monitor.process_tick(6811, f"{TS_BASE}01:00Z")
+    monitor.process_tick(6812, f"{TS_BASE}02:00Z")
+    events = monitor.process_tick(6813, f"{TS_BASE}03:00Z")
     return events
 
 

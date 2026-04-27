@@ -91,9 +91,8 @@ def test_load_state_creates_detectors(monitor, sample_plan):
     monitor.load_state()
     assert monitor.plan is not None
     assert monitor.plan.key_level_upper == 6809
-    assert len(monitor.detectors) == 2
+    assert len(monitor.detectors) == 1
     assert monitor.detectors[0].level == 6809
-    assert monitor.detectors[1].level == 6781
 
 
 def test_load_state_no_plan(monitor):
@@ -103,10 +102,9 @@ def test_load_state_no_plan(monitor):
 
 
 def test_load_state_restores_existing(monitor, sample_plan, state_path):
-    # Pre-guardar detectores con estado
+    # Pre-guardar estado del detector upper
     detectors = [
         FailedBreakdownDetector(level=6809, side="upper", state=State.BREAKDOWN, breakdown_low=6804),
-        FailedBreakdownDetector(level=6781, side="lower"),
     ]
     save_detectors(detectors, state_path)
 
@@ -125,14 +123,14 @@ def test_process_tick_no_event(monitor, sample_plan):
 
 
 def test_process_tick_breakdown(monitor, sample_plan, mock_notifier):
-    """Precio rompe nivel inferior → BREAKDOWN + alerta."""
+    """Precio rompe nivel superior → BREAKDOWN + alerta."""
     monitor.load_state()
-    events = monitor.process_tick(6776, "2026-04-10T14:00:00Z")
+    events = monitor.process_tick(6800, "2026-04-10T14:00:00Z")
 
-    # Debe haber un evento de breakdown para el nivel 6781
+    # Debe haber un evento de breakdown para el nivel 6809
     breakdown_events = [e for e in events if "BREAKDOWN" in e["type"]]
     assert len(breakdown_events) == 1
-    assert breakdown_events[0]["level"] == 6781
+    assert breakdown_events[0]["level"] == 6809
 
     mock_notifier.notify_breakdown.assert_called_once()
 
@@ -141,17 +139,17 @@ def test_full_failed_breakdown_to_trade(monitor, sample_plan, mock_notifier):
     """Secuencia completa: breakdown → recovery → signal → trade abierto."""
     monitor.load_state()
 
-    # Breakdown en nivel inferior (6781)
-    monitor.process_tick(6776, "2026-04-10T14:00:00Z")
-    assert monitor.detectors[1].state == State.BREAKDOWN
+    # Breakdown en nivel superior (6809)
+    monitor.process_tick(6800, "2026-04-10T14:00:00Z")
+    assert monitor.detectors[0].state == State.BREAKDOWN
 
     # Recovery
-    monitor.process_tick(6783, "2026-04-10T14:01:00Z")
-    assert monitor.detectors[1].state == State.RECOVERY
+    monitor.process_tick(6811, "2026-04-10T14:01:00Z")
+    assert monitor.detectors[0].state == State.RECOVERY
 
     # Aceptacion (3 polls)
-    monitor.process_tick(6784, "2026-04-10T14:02:00Z")
-    events = monitor.process_tick(6785, "2026-04-10T14:03:00Z")
+    monitor.process_tick(6812, "2026-04-10T14:02:00Z")
+    events = monitor.process_tick(6813, "2026-04-10T14:03:00Z")
 
     # Debe haber signal + trade abierto
     signal_events = [e for e in events if "SIGNAL" in e["type"]]
@@ -159,23 +157,23 @@ def test_full_failed_breakdown_to_trade(monitor, sample_plan, mock_notifier):
 
     mock_notifier.notify_signal.assert_called_once()
 
-    # Trade LONG con targets_upper (6819, 6830) — no targets_lower
+    # Trade LONG con targets_upper (6819, 6830)
     trade = monitor.trade_manager.active_trade()
     assert trade is not None
     assert trade.direction == "LONG"
-    assert trade.targets == [6819, 6830]  # targets hacia arriba
-    assert monitor.detectors[1].state == State.ACTIVE
+    assert trade.targets == [6819, 6830]
+    assert monitor.detectors[0].state == State.ACTIVE
 
 
 def test_full_sequence_with_target(monitor, sample_plan, mock_notifier):
     """Secuencia completa hasta target 1 (trailing stop a breakeven)."""
     monitor.load_state()
 
-    # Breakdown → Recovery → Signal
-    monitor.process_tick(6776, "2026-04-10T14:00:00Z")
-    monitor.process_tick(6783, "2026-04-10T14:01:00Z")
-    monitor.process_tick(6784, "2026-04-10T14:02:00Z")
-    monitor.process_tick(6785, "2026-04-10T14:03:00Z")  # SIGNAL + trade LONG
+    # Breakdown → Recovery → Signal en nivel upper (6809)
+    monitor.process_tick(6800, "2026-04-10T14:00:00Z")
+    monitor.process_tick(6811, "2026-04-10T14:01:00Z")
+    monitor.process_tick(6812, "2026-04-10T14:02:00Z")
+    monitor.process_tick(6813, "2026-04-10T14:03:00Z")  # SIGNAL + trade LONG
 
     # Trade abierto LONG con targets [6819, 6830]
     trade = monitor.trade_manager.active_trade()
@@ -183,32 +181,32 @@ def test_full_sequence_with_target(monitor, sample_plan, mock_notifier):
     assert trade.targets == [6819, 6830]
 
     # Precio sube hacia Target 1 (6819)
-    monitor.process_tick(6810, "2026-04-10T14:04:00Z")  # sin evento
+    monitor.process_tick(6815, "2026-04-10T14:04:00Z")  # sin evento
     events = monitor.process_tick(6819, "2026-04-10T14:05:00Z")  # Target 1!
 
     target_events = [e for e in events if e["type"] == "TARGET_HIT"]
     assert len(target_events) == 1
     assert target_events[0]["target_index"] == 0
-    assert target_events[0]["new_stop"] == 6785  # breakeven (entry_price)
+    assert target_events[0]["new_stop"] == 6813  # breakeven (entry_price)
 
     # Trade sigue OPEN con stop a breakeven
     trade = monitor.trade_manager.active_trade()
     assert trade.status == TradeStatus.OPEN
-    assert trade.stop_price == 6785  # breakeven
+    assert trade.stop_price == 6813  # breakeven
     assert trade.targets_hit == 1
 
 
 def test_state_persistence(monitor, sample_plan, state_path):
     """Estado se persiste correctamente tras process_tick."""
     monitor.load_state()
-    monitor.process_tick(6776, "2026-04-10T14:00:00Z")
+    monitor.process_tick(6800, "2026-04-10T14:00:00Z")
     monitor.save_state()
 
     assert state_path.exists()
     data = json.loads(state_path.read_text(encoding="utf-8"))
     detectors = data["detectors"]
-    lower = [d for d in detectors if d["side"] == "lower"][0]
-    assert lower["state"] == "BREAKDOWN"
+    upper = [d for d in detectors if d["side"] == "upper"][0]
+    assert upper["state"] == "BREAKDOWN"
 
 
 def test_scan_for_plan_finds_existing(monitor, sample_plan):
@@ -328,11 +326,11 @@ def test_misaligned_trade_only_t1(monitor, sample_plan, mock_notifier, weekly_pa
     save_weekly(weekly, weekly_path)
     monitor.load_state()
 
-    # Secuencia: breakdown → recovery → signal
-    monitor.process_tick(6776, "2026-04-10T14:00:00Z")
-    monitor.process_tick(6783, "2026-04-10T14:01:00Z")
-    monitor.process_tick(6784, "2026-04-10T14:02:00Z")
-    monitor.process_tick(6785, "2026-04-10T14:03:00Z")
+    # Secuencia: breakdown → recovery → signal en nivel upper (6809)
+    monitor.process_tick(6800, "2026-04-10T14:00:00Z")
+    monitor.process_tick(6811, "2026-04-10T14:01:00Z")
+    monitor.process_tick(6812, "2026-04-10T14:02:00Z")
+    monitor.process_tick(6813, "2026-04-10T14:03:00Z")
 
     trade = monitor.trade_manager.active_trade()
     assert trade is not None
@@ -352,11 +350,11 @@ def test_aligned_trade_extended_targets(monitor, sample_plan, mock_notifier, wee
     save_weekly(weekly, weekly_path)
     monitor.load_state()
 
-    # Secuencia: breakdown → recovery → signal
-    monitor.process_tick(6776, "2026-04-10T14:00:00Z")
-    monitor.process_tick(6783, "2026-04-10T14:01:00Z")
-    monitor.process_tick(6784, "2026-04-10T14:02:00Z")
-    monitor.process_tick(6785, "2026-04-10T14:03:00Z")
+    # Secuencia: breakdown → recovery → signal en nivel upper (6809)
+    monitor.process_tick(6800, "2026-04-10T14:00:00Z")
+    monitor.process_tick(6811, "2026-04-10T14:01:00Z")
+    monitor.process_tick(6812, "2026-04-10T14:02:00Z")
+    monitor.process_tick(6813, "2026-04-10T14:03:00Z")
 
     trade = monitor.trade_manager.active_trade()
     assert trade is not None
@@ -376,11 +374,11 @@ def test_alignment_in_notification(monitor, sample_plan, mock_notifier, weekly_p
     save_weekly(weekly, weekly_path)
     monitor.load_state()
 
-    # Secuencia completa hasta SIGNAL
-    monitor.process_tick(6776, "2026-04-10T14:00:00Z")
-    monitor.process_tick(6783, "2026-04-10T14:01:00Z")
-    monitor.process_tick(6784, "2026-04-10T14:02:00Z")
-    monitor.process_tick(6785, "2026-04-10T14:03:00Z")
+    # Secuencia completa hasta SIGNAL en nivel upper (6809)
+    monitor.process_tick(6800, "2026-04-10T14:00:00Z")
+    monitor.process_tick(6811, "2026-04-10T14:01:00Z")
+    monitor.process_tick(6812, "2026-04-10T14:02:00Z")
+    monitor.process_tick(6813, "2026-04-10T14:03:00Z")
 
     # Verificar que notify_signal recibió alignment
     mock_notifier.notify_signal.assert_called_once()
@@ -601,7 +599,7 @@ def test_approaching_alert_fires_on_standby_to_alert(mock_notifier, sample_plan,
     monitor.plan = sample_plan
     monitor._init_detectors()
 
-    level = sample_plan.key_level_lower  # 6781
+    level = sample_plan.key_level_upper  # 6809
 
     # Primer tick: precio lejos → STANDBY (no alerta)
     monitor.process_tick(level + CONTEXT_ALERT_PTS + 5)
