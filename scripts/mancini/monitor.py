@@ -852,6 +852,28 @@ class ManciniMonitor:
 
     # ── Intraday tweet updates ─────────────────────────────────────
 
+    def _seed_processed_tweets_silent(self) -> None:
+        """Marca todos los tweets actuales como procesados sin notificar.
+
+        Se llama al arrancar con plan ya cargado para evitar flood de
+        mensajes Telegram con tweets anteriores al reinicio.
+        """
+        from scripts.mancini.tweet_fetcher import fetch_mancini_tweets
+
+        try:
+            tweets = fetch_mancini_tweets(max_tweets=20)
+        except Exception as e:
+            _log(f"Seed tweets silencioso: error al fetch ({e})")
+            return
+
+        new_ids = {
+            t["id"] for t in tweets
+            if t["id"] not in self.intraday_state.processed_tweet_ids
+        }
+        if new_ids:
+            self.intraday_state.processed_tweet_ids.update(new_ids)
+            _log(f"Seed silencioso: {len(new_ids)} tweet(s) marcados como procesados")
+
     def check_intraday_updates(self) -> list[PlanAdjustment]:
         """Fetch tweets nuevos, clasificar y aplicar ajustes al plan.
 
@@ -1114,6 +1136,8 @@ class ManciniMonitor:
         if self.plan:
             _log("Plan existente cargado al arrancar")
             self._log_plan_info()
+            # Marcar tweets actuales como procesados para no inundar Telegram al reiniciar
+            self._seed_processed_tweets_silent()
             price = self.poll_es()
             notifier.notify_plan_loaded(
                 self.plan.to_dict(),
