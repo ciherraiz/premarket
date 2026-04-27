@@ -164,7 +164,7 @@ def test_load_intraday_state_no_fecha_field_preserved(intraday_path):
 
 def test_apply_invalidation_full(loaded_monitor):
     """INVALIDATION full → todos los detectores EXPIRED."""
-    assert len(loaded_monitor.detectors) == 2
+    assert len(loaded_monitor.detectors) == 1
     adj = PlanAdjustment(
         tweet_id="inv1", tweet_text="plan invalidated",
         timestamp="2026-04-16T11:00:00",
@@ -178,7 +178,7 @@ def test_apply_invalidation_full(loaded_monitor):
 
 
 def test_apply_invalidation_partial(loaded_monitor):
-    """INVALIDATION upper → solo upper EXPIRED, lower sigue."""
+    """INVALIDATION upper → upper EXPIRED (no hay detector lower)."""
     adj = PlanAdjustment(
         tweet_id="inv2", tweet_text="upper invalidated",
         timestamp="2026-04-16T11:00:00",
@@ -188,29 +188,28 @@ def test_apply_invalidation_partial(loaded_monitor):
     loaded_monitor._apply_adjustment(adj)
 
     upper = loaded_monitor._get_detector_by_side("upper")
-    lower = loaded_monitor._get_detector_by_side("lower")
     assert upper.state == State.EXPIRED
-    assert lower.state == State.WATCHING
+    assert loaded_monitor._get_detector_by_side("lower") is None
 
 
 def test_apply_level_update_watching(loaded_monitor):
-    """LEVEL_UPDATE con detector en WATCHING → actualiza nivel."""
+    """LEVEL_UPDATE upper con detector en WATCHING → actualiza nivel."""
     adj = PlanAdjustment(
-        tweet_id="lu1", tweet_text="buyers defending 6790",
+        tweet_id="lu1", tweet_text="resistance now at 6820",
         timestamp="2026-04-16T11:00:00",
         adjustment_type="LEVEL_UPDATE",
-        details={"side": "lower", "old_level": 6781, "new_level": 6790},
+        details={"side": "upper", "old_level": 6809, "new_level": 6820},
     )
     loaded_monitor._apply_adjustment(adj)
 
-    assert loaded_monitor.plan.key_level_lower == 6790
-    det = loaded_monitor._get_detector_by_side("lower")
-    assert det.level == 6790
+    assert loaded_monitor.plan.key_level_upper == 6820
+    det = loaded_monitor._get_detector_by_side("upper")
+    assert det.level == 6820
 
 
 def test_apply_level_update_active_no_change(loaded_monitor):
-    """LEVEL_UPDATE con detector en ACTIVE → plan actualiza pero detector no."""
-    det = loaded_monitor._get_detector_by_side("lower")
+    """LEVEL_UPDATE upper con detector en ACTIVE → plan actualiza pero detector no."""
+    det = loaded_monitor._get_detector_by_side("upper")
     det.mark_active()
     original_level = det.level
 
@@ -218,12 +217,12 @@ def test_apply_level_update_active_no_change(loaded_monitor):
         tweet_id="lu2", tweet_text="new level",
         timestamp="2026-04-16T11:00:00",
         adjustment_type="LEVEL_UPDATE",
-        details={"side": "lower", "old_level": 6781, "new_level": 6790},
+        details={"side": "upper", "old_level": 6809, "new_level": 6820},
     )
     loaded_monitor._apply_adjustment(adj)
 
     # Plan se actualiza
-    assert loaded_monitor.plan.key_level_lower == 6790
+    assert loaded_monitor.plan.key_level_upper == 6820
     # Detector en ACTIVE no cambia nivel
     assert det.level == original_level
 

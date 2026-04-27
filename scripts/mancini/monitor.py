@@ -254,15 +254,11 @@ class ManciniMonitor:
             self._init_detectors()
 
     def _init_detectors(self) -> None:
-        """Crea detectores a partir del plan actual."""
+        """Crea detectores a partir del plan actual. Solo upper — operamos únicamente en largo."""
         self.detectors = []
         if self.plan.key_level_upper is not None:
             self.detectors.append(
                 FailedBreakdownDetector(level=self.plan.key_level_upper, side="upper")
-            )
-        if self.plan.key_level_lower is not None:
-            self.detectors.append(
-                FailedBreakdownDetector(level=self.plan.key_level_lower, side="lower")
             )
 
     def calc_weekly_bias(self) -> str:
