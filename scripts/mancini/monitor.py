@@ -512,8 +512,8 @@ class ManciniMonitor:
             dist = price - detector.level
             _log(f"Contexto [{detector.side}] {prev} → {ctx} | ES={price} nivel={detector.level} ({dist:+.1f} pts)")
 
-            # Alerta Telegram solo en transición STANDBY → ALERT_ZONE
-            if prev == "STANDBY" and ctx == "ALERT_ZONE":
+            # Alerta Telegram en STANDBY → ALERT_ZONE y en arranque con precio ya en zona (None → ALERT_ZONE)
+            if prev in ("STANDBY", None) and ctx == "ALERT_ZONE":
                 notifier.notify_approaching_level(detector.level, price, dist)
 
     def _handle_transition(self, t: StateTransition, price: float,
