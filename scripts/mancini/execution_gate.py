@@ -222,7 +222,7 @@ def evaluate_signal(
     client = anthropic.Anthropic()
     response = client.messages.create(
         model=MODEL,
-        max_tokens=300,
+        max_tokens=600,
         system=system,
         messages=[{"role": "user", "content": "Evalúa esta señal de trading para ejecución automática."}],
     )

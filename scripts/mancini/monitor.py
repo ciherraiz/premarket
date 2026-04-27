@@ -260,7 +260,8 @@ class ManciniMonitor:
             self.detectors.append(
                 FailedBreakdownDetector(level=self.plan.key_level_upper, side="upper")
             )
-        if self.plan.key_level_lower is not None:
+        if (self.plan.key_level_lower is not None
+                and self.plan.key_level_lower != self.plan.key_level_upper):
             self.detectors.append(
                 FailedBreakdownDetector(level=self.plan.key_level_lower, side="lower")
             )
