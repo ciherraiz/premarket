@@ -114,6 +114,7 @@ def generate_plan_chart(
     Returns:
         Bytes del PNG generado.
     """
+    plt.close("all")  # liberar figuras anteriores antes de crear una nueva
     fig, ax = plt.subplots(figsize=(8, 6))
 
     # Estilo oscuro
@@ -280,7 +281,7 @@ def generate_plan_chart(
 
     # Exportar a bytes
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=120,
+    fig.savefig(buf, format="png", dpi=100,
                 facecolor=fig.get_facecolor())
     plt.close(fig)
     buf.seek(0)
