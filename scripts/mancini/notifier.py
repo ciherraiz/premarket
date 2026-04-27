@@ -98,7 +98,7 @@ def notify_auto_levels(auto) -> bool:
     below = [l for l in relevant if l.value < spot]
 
     def fmt_level(l) -> str:
-        group_tag = {"gex": "GEX", "weekly": "sem", "monthly": "mes", "daily": "día"}.get(l.group, l.group)
+        group_tag = {"gex": "GEX", "weekly": "sem", "monthly": "mes", "daily": "día", "overnight": "ON"}.get(l.group, l.group)
         return f"  {_esc(f'{l.value:.2f}')} _{_esc(l.label)}_ \\({group_tag}\\)"
 
     lines = [

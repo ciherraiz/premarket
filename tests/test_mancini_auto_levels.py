@@ -18,6 +18,7 @@ from scripts.mancini.auto_levels import (
     build_auto_levels,
     calc_pivot_points,
     calc_round_numbers,
+    fetch_overnight_ohlc,
     load_auto_levels,
     save_auto_levels,
     _dedup_levels,
@@ -406,3 +407,119 @@ class TestMonitorLoadStateAutoLevels:
         assert monitor.plan.is_auto_levels is False
         assert monitor.plan.is_stale is False
         assert monitor.plan.fecha == "2026-04-26"
+
+
+# ── fetch_overnight_ohlc ───────────────────────────────────────────────
+
+def _make_hourly_df(rows: list[dict]) -> pd.DataFrame:
+    """Crea un DataFrame de barras horarias con index tz-aware (UTC)."""
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+    index = pd.to_datetime([r["ts"] for r in rows], utc=True)
+    df = pd.DataFrame(
+        {"High": [r["h"] for r in rows], "Low": [r["l"] for r in rows]},
+        index=index,
+    )
+    return df
+
+
+class TestFetchOvernightOhlc:
+
+    def test_retorna_onh_onl_de_barras_overnight(self):
+        """Con barras dentro de la ventana 18:00–09:29 ET, retorna (max_high, min_low)."""
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as dt
+        ET = ZoneInfo("America/New_York")
+        # Simulamos "hoy" = 2026-04-26 09:00 ET
+        fake_now = dt(2026, 4, 26, 9, 0, 0, tzinfo=ET)
+
+        rows = [
+            # Dentro de ventana: 2026-04-25 18:00, 20:00, 2026-04-26 02:00, 08:00
+            {"ts": "2026-04-25 22:00:00+00:00", "h": 5200.0, "l": 5190.0},  # 18:00 ET
+            {"ts": "2026-04-26 00:00:00+00:00", "h": 5210.0, "l": 5185.0},  # 20:00 ET
+            {"ts": "2026-04-26 06:00:00+00:00", "h": 5195.0, "l": 5180.0},  # 02:00 ET
+            {"ts": "2026-04-26 12:00:00+00:00", "h": 5205.0, "l": 5182.0},  # 08:00 ET
+            # Fuera de ventana: 2026-04-26 10:00 ET (RTH)
+            {"ts": "2026-04-26 14:00:00+00:00", "h": 5220.0, "l": 5150.0},
+        ]
+        df = _make_hourly_df(rows)
+
+        with patch("scripts.mancini.auto_levels.yf.download", return_value=df), \
+             patch("scripts.mancini.auto_levels.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            mock_dt.side_effect = lambda *a, **kw: __import__("datetime").datetime(*a, **kw)
+            result = fetch_overnight_ohlc()
+
+        assert result is not None
+        onh, onl = result
+        assert onh == pytest.approx(5210.0, abs=0.1)  # max dentro de ventana
+        assert onl == pytest.approx(5180.0, abs=0.1)  # min dentro de ventana
+
+    def test_retorna_none_si_dataframe_vacio(self):
+        empty_df = pd.DataFrame()
+        with patch("scripts.mancini.auto_levels.yf.download", return_value=empty_df):
+            result = fetch_overnight_ohlc()
+        assert result is None
+
+    def test_retorna_none_si_yfinance_lanza_excepcion(self):
+        with patch("scripts.mancini.auto_levels.yf.download", side_effect=Exception("timeout")):
+            result = fetch_overnight_ohlc()
+        assert result is None
+
+    def test_retorna_none_si_no_hay_barras_en_ventana(self):
+        """Si todas las barras están fuera del rango overnight, retorna None."""
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as dt
+        ET = ZoneInfo("America/New_York")
+        fake_now = dt(2026, 4, 26, 9, 0, 0, tzinfo=ET)
+
+        # Solo barra RTH: 2026-04-26 14:00 UTC = 10:00 ET (fuera de ventana)
+        rows = [{"ts": "2026-04-26 14:00:00+00:00", "h": 5220.0, "l": 5150.0}]
+        df = _make_hourly_df(rows)
+
+        with patch("scripts.mancini.auto_levels.yf.download", return_value=df), \
+             patch("scripts.mancini.auto_levels.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            mock_dt.side_effect = lambda *a, **kw: __import__("datetime").datetime(*a, **kw)
+            result = fetch_overnight_ohlc()
+
+        assert result is None
+
+
+class TestOvernightEnBuildAutoLevels:
+
+    def test_overnight_niveles_presentes(self):
+        """Con overnight=(5210, 5180), ONH y ONL aparecen en los niveles."""
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {},
+                                 overnight=(5210.0, 5180.0))
+        labels = {l.label for l in auto.levels}
+        assert "ONH" in labels
+        assert "ONL" in labels
+
+    def test_overnight_none_no_añade_niveles(self):
+        """Sin overnight, no se añaden niveles de grupo overnight."""
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {}, overnight=None)
+        grupos = {l.group for l in auto.levels}
+        assert "overnight" not in grupos
+
+    def test_overnight_group_y_priority(self):
+        """ONH/ONL tienen group=overnight y priority=2."""
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {},
+                                 overnight=(5210.0, 5180.0))
+        onh = next(l for l in auto.levels if l.label == "ONH")
+        onl = next(l for l in auto.levels if l.label == "ONL")
+        assert onh.group == "overnight"
+        assert onl.group == "overnight"
+        assert onh.priority == 2
+        assert onl.priority == 2
+
+    def test_overnight_no_recibe_basis_adjustment(self):
+        """ONH/ONL no se ven afectados por el ratio SPX→ES (ya son /ES)."""
+        # Con basis=1.003, los niveles diarios/semanales se ajustan,
+        # pero ONH/ONL deben mantenerse en su valor original.
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5380.0, {},
+                                 spx_spot=5360.0, overnight=(5210.0, 5180.0))
+        onh = next(l for l in auto.levels if l.label == "ONH")
+        onl = next(l for l in auto.levels if l.label == "ONL")
+        assert onh.value == pytest.approx(5210.0, abs=0.01)
+        assert onl.value == pytest.approx(5180.0, abs=0.01)
