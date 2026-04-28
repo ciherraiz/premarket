@@ -508,6 +508,10 @@ def start_day(skip_scan: bool = False, dry_run: bool = False) -> bool:
                 _auto = _calc_auto()
                 if _auto:
                     print(f"  Auto-levels calculados: {len(_auto.levels)} niveles")
+                    try:
+                        notifier.notify_auto_levels(_auto)
+                    except Exception as _ne:
+                        print(f"  ⚠️  notify_auto_levels: {_ne}")
                 else:
                     print("  ⚠️  Auto-levels: datos insuficientes (data.json/indicators.json no disponibles)")
         else:
