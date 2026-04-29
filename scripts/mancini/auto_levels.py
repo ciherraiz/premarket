@@ -1,9 +1,9 @@
 """
 Niveles técnicos autónomos para /ES — calculados sin tweets de Mancini.
 
-Calcula Prior Day/Week/Month H/L/C, pivot points clásicos, round numbers
-y reutiliza niveles GEX ya calculados. Sirve como fallback cuando no hay
-plan de Mancini disponible.
+Calcula Prior Day/Week/Month H/L/C, pivot points clásicos y round numbers.
+Sirve como fallback cuando no hay plan de Mancini disponible.
+Los niveles GEX se notifican por separado en la apertura (~9:35 ET).
 """
 
 from __future__ import annotations
@@ -36,40 +36,6 @@ class AutoLevels:
     spot: float                   # precio /ES al calcular
     levels: list[TechnicalLevel]  # ordenados por value desc
     calculated_at: str            # ISO timestamp
-
-
-def _load_gex_levels() -> dict:
-    """
-    Carga niveles GEX del último snapshot intraday disponible.
-    Fallback: indicators.json premarket.
-    """
-    try:
-        from scripts.gex_intraday import load_snapshots
-        snapshots = load_snapshots()
-        if snapshots:
-            last = snapshots[-1]
-            if last.get("status") == "OK":
-                return {
-                    "flip_level":   last.get("flip_level"),
-                    "put_wall":     last.get("put_wall"),
-                    "call_wall":    last.get("call_wall"),
-                    "control_node": last.get("control_node"),
-                }
-    except Exception:
-        pass
-
-    try:
-        ind = json.loads(Path("outputs/indicators.json").read_text(encoding="utf-8"))
-        pre_ind = ind.get("premarket", ind)
-        ng = pre_ind.get("net_gex", {})
-        return {
-            "flip_level":   ng.get("flip_level"),
-            "put_wall":     ng.get("put_wall"),
-            "call_wall":    ng.get("call_wall"),
-            "control_node": ng.get("control_node"),
-        }
-    except Exception:
-        return {}
 
 
 def fetch_weekly_ohlc(symbol: str = "^GSPC", bars: int = 4) -> pd.DataFrame | None:
@@ -191,7 +157,6 @@ def build_auto_levels(
     weekly_df: pd.DataFrame | None,
     monthly_df: pd.DataFrame | None,
     es_spot: float,
-    gex_levels: dict,
     spx_spot: float | None = None,
     overnight: tuple[float, float] | None = None,
 ) -> AutoLevels:
@@ -199,12 +164,13 @@ def build_auto_levels(
     Ensambla todos los niveles técnicos en un AutoLevels.
 
     spx_spot: cierre SPX cash de la misma sesión que es_spot.
-    Si se proporciona, los niveles calculados desde SPX (daily, weekly, monthly, gex)
+    Si se proporciona, los niveles calculados desde SPX (daily, weekly, monthly)
     se multiplican por el ratio es_spot/spx_spot para convertirlos a términos /ES,
     el mismo sistema de referencia que usa Mancini.
     Los round numbers y overnight no se ajustan porque ya están en términos /ES.
 
     overnight: tupla (onh, onl) del rango Globex. Ya en /ES — no se aplica basis.
+    Los niveles GEX se notifican por separado en apertura (~9:35 ET).
     """
     # Ratio de conversión SPX cash → /ES. Sin spx_spot, no se ajusta.
     basis = (es_spot / spx_spot) if spx_spot and spx_spot > 0 else 1.0
@@ -260,18 +226,7 @@ def build_auto_levels(
             priority=3,
         ))
 
-    # ── Grupo E: GEX ───────────────────────────────────────────────────
-    for key, label in [
-        ("flip_level",   "FLIP"),
-        ("put_wall",     "PUT_WALL"),
-        ("call_wall",    "CALL_WALL"),
-        ("control_node", "CONTROL_NODE"),
-    ]:
-        val = gex_levels.get(key)
-        if val is not None:
-            levels.append(TechnicalLevel(value=adj(float(val)), label=label, group="gex", priority=1))
-
-    # ── Grupo F: Overnight High/Low (ya en /ES — no se ajustan) ────────
+    # ── Grupo E: Overnight High/Low (ya en /ES — no se ajustan) ──────
     if overnight is not None:
         onh, onl = overnight
         levels.append(TechnicalLevel(value=onh, label="ONH", group="overnight", priority=2))
@@ -317,13 +272,13 @@ def save_auto_levels(levels: AutoLevels, path: Path = AUTO_LEVELS_PATH) -> None:
 
 def calculate_and_save(
     data_path: str = "outputs/data.json",
-    indicators_path: str = "outputs/indicators.json",
     output_path: Path = AUTO_LEVELS_PATH,
 ) -> AutoLevels | None:
     """
-    Lee data.json e indicators.json, calcula todos los niveles,
+    Lee data.json, calcula niveles técnicos (sin GEX),
     persiste en mancini_auto_levels.json y retorna el objeto.
     Retorna None si faltan datos esenciales.
+    Los niveles GEX se notifican por separado en apertura (~9:35 ET).
     """
     try:
         data = json.loads(Path(data_path).read_text(encoding="utf-8"))
@@ -344,22 +299,6 @@ def calculate_and_save(
     if es_spot is None:
         return None
 
-    # GEX levels — preferir snapshot intraday si existe, fallback a indicators.json
-    gex_levels = _load_gex_levels()
-    if not gex_levels:
-        try:
-            ind = json.loads(Path(indicators_path).read_text(encoding="utf-8"))
-            pre_ind = ind.get("premarket", ind)
-            ng = pre_ind.get("net_gex", {})
-            gex_levels = {
-                "flip_level":   ng.get("flip_level"),
-                "put_wall":     ng.get("put_wall"),
-                "call_wall":    ng.get("call_wall"),
-                "control_node": ng.get("control_node"),
-            }
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
-
     weekly_df = fetch_weekly_ohlc()
     monthly_df = fetch_monthly_ohlc()
     overnight = fetch_overnight_ohlc()
@@ -367,7 +306,7 @@ def calculate_and_save(
     spx_spot = premarket.get("spx_spot")
     auto = build_auto_levels(
         daily_ohlcv, weekly_df, monthly_df,
-        float(es_spot), gex_levels,
+        float(es_spot),
         spx_spot=float(spx_spot) if spx_spot else None,
         overnight=overnight,
     )

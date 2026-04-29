@@ -141,7 +141,7 @@ GEX = {
 class TestBuildAutoLevels:
 
     def test_contiene_niveles_diarios(self):
-        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {})
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0)
         labels = {l.label for l in auto.levels}
         assert "PDH" in labels
         assert "PDL" in labels
@@ -149,53 +149,57 @@ class TestBuildAutoLevels:
         assert "PP_D" in labels
 
     def test_contiene_niveles_semanales(self):
-        auto = build_auto_levels(DAILY_OHLCV, WEEKLY_DATA, None, 5370.0, {})
+        auto = build_auto_levels(DAILY_OHLCV, WEEKLY_DATA, None, 5370.0)
         labels = {l.label for l in auto.levels}
         assert "PWH" in labels
         assert "PWL" in labels
         assert "PP_W" in labels
 
     def test_contiene_niveles_mensuales(self):
-        auto = build_auto_levels(DAILY_OHLCV, None, MONTHLY_DATA, 5370.0, {})
+        auto = build_auto_levels(DAILY_OHLCV, None, MONTHLY_DATA, 5370.0)
         labels = {l.label for l in auto.levels}
         assert "PMH" in labels
         assert "PML" in labels
 
-    def test_contiene_gex_levels(self):
-        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, GEX)
+    def test_no_contiene_gex_levels(self):
+        """Los niveles GEX no están en auto_levels — se notifican por separado en apertura."""
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0)
         labels = {l.label for l in auto.levels}
-        assert "FLIP" in labels
-        assert "PUT_WALL" in labels
-        assert "CALL_WALL" in labels
+        assert "FLIP" not in labels
+        assert "PUT_WALL" not in labels
+        assert "CALL_WALL" not in labels
+        assert "CONTROL_NODE" not in labels
+        groups = {l.group for l in auto.levels}
+        assert "gex" not in groups
 
     def test_contiene_round_numbers(self):
-        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {})
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0)
         groups = {l.group for l in auto.levels}
         assert "round" in groups
 
     def test_ordenados_descendente(self):
-        auto = build_auto_levels(DAILY_OHLCV, WEEKLY_DATA, MONTHLY_DATA, 5370.0, GEX)
+        auto = build_auto_levels(DAILY_OHLCV, WEEKLY_DATA, MONTHLY_DATA, 5370.0)
         values = [l.value for l in auto.levels]
         assert values == sorted(values, reverse=True)
 
     def test_sin_datos_ohlcv_no_lanza_error(self):
-        auto = build_auto_levels([], None, None, 5370.0, {})
+        auto = build_auto_levels([], None, None, 5370.0)
         assert auto is not None
         assert auto.levels is not None
 
     def test_spot_guardado_correctamente(self):
-        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.25, {})
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.25)
         assert auto.spot == 5370.25
 
     def test_fecha_es_hoy(self):
-        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {})
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0)
         assert auto.fecha == str(date.today())
 
     def test_basis_correction_aplica_ratio(self):
         # SPX=5360, ES=5380 → ratio=1.00373
         # PDH en SPX = 5380 → PDH ajustado = 5380 * (5380/5360) ≈ 5400.1
-        auto_adj = build_auto_levels(DAILY_OHLCV, None, None, 5380.0, {}, spx_spot=5360.0)
-        auto_raw = build_auto_levels(DAILY_OHLCV, None, None, 5380.0, {}, spx_spot=None)
+        auto_adj = build_auto_levels(DAILY_OHLCV, None, None, 5380.0, spx_spot=5360.0)
+        auto_raw = build_auto_levels(DAILY_OHLCV, None, None, 5380.0, spx_spot=None)
 
         pdh_adj = next(l for l in auto_adj.levels if l.label == "PDH")
         pdh_raw = next(l for l in auto_raw.levels if l.label == "PDH")
@@ -208,7 +212,7 @@ class TestBuildAutoLevels:
         # Los round numbers deben ser múltiplos exactos de 25 centrados en es_spot,
         # independientemente de spx_spot (no se multiplican por el ratio de basis)
         es_spot = 5380.0
-        auto_adj = build_auto_levels(DAILY_OHLCV, None, None, es_spot, {}, spx_spot=5360.0)
+        auto_adj = build_auto_levels(DAILY_OHLCV, None, None, es_spot, spx_spot=5360.0)
 
         for lvl in auto_adj.levels:
             if lvl.group == "round":
@@ -216,8 +220,8 @@ class TestBuildAutoLevels:
                 assert abs(lvl.value - es_spot) <= es_spot * 0.03 + 25
 
     def test_basis_sin_spx_spot_no_modifica_valores(self):
-        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {}, spx_spot=None)
-        auto_explicit_1 = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {})
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, spx_spot=None)
+        auto_explicit_1 = build_auto_levels(DAILY_OHLCV, None, None, 5370.0)
 
         vals1 = [l.value for l in auto.levels]
         vals2 = [l.value for l in auto_explicit_1.levels]
@@ -230,7 +234,7 @@ class TestPersistence:
 
     def test_roundtrip(self, tmp_path):
         path = tmp_path / "auto_levels.json"
-        auto = build_auto_levels(DAILY_OHLCV, WEEKLY_DATA, MONTHLY_DATA, 5370.0, GEX)
+        auto = build_auto_levels(DAILY_OHLCV, WEEKLY_DATA, MONTHLY_DATA, 5370.0)
         save_auto_levels(auto, path)
         loaded = load_auto_levels(path)
         assert loaded is not None
@@ -359,8 +363,11 @@ class TestMonitorLoadStateAutoLevels:
     def test_usa_auto_levels_si_no_hay_plan(self, paths):
         from scripts.mancini.monitor import ManciniMonitor, AUTO_LEVELS_PATH
 
-        # Crear auto_levels de hoy
-        auto = build_auto_levels(DAILY_OHLCV, WEEKLY_DATA, None, 5370.0, GEX)
+        # Crear auto_levels con spot=5300 — así PWH=5320 (arriba) y PWL=5260 (abajo)
+        # ambos dentro de ±50 pts, dando niveles priority=1 en ambos lados.
+        # Forzar fecha a "2026-04-26" para coincidir con el _now_et mockeado.
+        auto = build_auto_levels(DAILY_OHLCV, WEEKLY_DATA, None, 5300.0)
+        auto.fecha = "2026-04-26"
         save_auto_levels(auto, paths["auto"])
 
         monitor = ManciniMonitor(
@@ -374,7 +381,7 @@ class TestMonitorLoadStateAutoLevels:
         with patch("scripts.mancini.monitor.AUTO_LEVELS_PATH", paths["auto"]):
             with patch("scripts.mancini.monitor.load_auto_levels") as mock_load:
                 mock_load.return_value = auto
-                monitor.load_state(current_price=5370.0)
+                monitor.load_state(current_price=5300.0)
 
         assert monitor.plan is not None
         assert monitor.plan.is_auto_levels is True
@@ -490,7 +497,7 @@ class TestOvernightEnBuildAutoLevels:
 
     def test_overnight_niveles_presentes(self):
         """Con overnight=(5210, 5180), ONH y ONL aparecen en los niveles."""
-        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {},
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0,
                                  overnight=(5210.0, 5180.0))
         labels = {l.label for l in auto.levels}
         assert "ONH" in labels
@@ -498,13 +505,13 @@ class TestOvernightEnBuildAutoLevels:
 
     def test_overnight_none_no_añade_niveles(self):
         """Sin overnight, no se añaden niveles de grupo overnight."""
-        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {}, overnight=None)
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, overnight=None)
         grupos = {l.group for l in auto.levels}
         assert "overnight" not in grupos
 
     def test_overnight_group_y_priority(self):
         """ONH/ONL tienen group=overnight y priority=2."""
-        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0, {},
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5370.0,
                                  overnight=(5210.0, 5180.0))
         onh = next(l for l in auto.levels if l.label == "ONH")
         onl = next(l for l in auto.levels if l.label == "ONL")
@@ -517,7 +524,7 @@ class TestOvernightEnBuildAutoLevels:
         """ONH/ONL no se ven afectados por el ratio SPX→ES (ya son /ES)."""
         # Con basis=1.003, los niveles diarios/semanales se ajustan,
         # pero ONH/ONL deben mantenerse en su valor original.
-        auto = build_auto_levels(DAILY_OHLCV, None, None, 5380.0, {},
+        auto = build_auto_levels(DAILY_OHLCV, None, None, 5380.0,
                                  spx_spot=5360.0, overnight=(5210.0, 5180.0))
         onh = next(l for l in auto.levels if l.label == "ONH")
         onl = next(l for l in auto.levels if l.label == "ONL")
