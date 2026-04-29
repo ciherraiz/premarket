@@ -501,21 +501,21 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
             base["call_wall"] = max(gex_0dte, key=gex_0dte.get)
 
             # Flip Level (IND-04) + Chop Zone
+            # Cruce por strike individual: primer strike positivo tras una secuencia negativa.
+            # Equivale a la frontera visual entre barras negativas y positivas en el perfil GEX.
             strikes_sorted   = sorted(gex_0dte.keys())
-            cumsum           = 0.0
-            started_negative = False
             flip_level       = None
             chop_zone_low    = None
+            prev_negative    = False
             for s in strikes_sorted:
-                cumsum += gex_0dte[s]
-                if cumsum < 0:
-                    started_negative = True
+                if gex_0dte[s] < 0:
+                    prev_negative = True
                     chop_zone_low = s
-                if started_negative and cumsum >= 0:
+                elif prev_negative and gex_0dte[s] >= 0:
                     flip_level = s
                     break
 
-            base["flip_level"]    = flip_level
+            base["flip_level"]     = flip_level
             base["chop_zone_low"]  = chop_zone_low if flip_level is not None else None
             base["chop_zone_high"] = flip_level
             if flip_level is None:
