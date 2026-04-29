@@ -366,12 +366,18 @@ def main():
             _call_notify("premarket")
             # Enviar auto-levels calculados durante run_premarket_phase
             try:
-                from mancini.auto_levels import load_auto_levels
+                from datetime import date as _date
+                from mancini.auto_levels import load_auto_levels, mark_auto_levels_notified
                 from mancini.notifier import notify_auto_levels
                 _auto = load_auto_levels()
-                if _auto and _auto.fecha == indicators.get("fecha", ""):
+                _today = str(_date.today())
+                if (_auto and _auto.fecha == indicators.get("fecha", "")
+                        and _auto.notified_at != _today):
                     notify_auto_levels(_auto)
+                    mark_auto_levels_notified()
                     print("[notify] Auto-levels enviados a Telegram.")
+                elif _auto and _auto.notified_at == _today:
+                    print("[notify] Auto-levels ya notificados hoy. Sin reenviar.")
             except Exception as _e:
                 print(f"[notify] WARN auto-levels: {_e}", file=sys.stderr)
 

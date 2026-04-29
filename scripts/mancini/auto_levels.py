@@ -36,6 +36,7 @@ class AutoLevels:
     spot: float                   # precio /ES al calcular
     levels: list[TechnicalLevel]  # ordenados por value desc
     calculated_at: str            # ISO timestamp
+    notified_at: str | None = None  # fecha YYYY-MM-DD en que se envió notify_auto_levels
 
 
 def fetch_weekly_ohlc(symbol: str = "^GSPC", bars: int = 4) -> pd.DataFrame | None:
@@ -253,6 +254,7 @@ def load_auto_levels(path: Path = AUTO_LEVELS_PATH) -> AutoLevels | None:
             spot=data["spot"],
             levels=levels,
             calculated_at=data["calculated_at"],
+            notified_at=data.get("notified_at"),
         )
     except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError):
         return None
@@ -266,8 +268,19 @@ def save_auto_levels(levels: AutoLevels, path: Path = AUTO_LEVELS_PATH) -> None:
         "spot": levels.spot,
         "levels": [asdict(l) for l in levels.levels],
         "calculated_at": levels.calculated_at,
+        "notified_at": levels.notified_at,
     }
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def mark_auto_levels_notified(path: Path = AUTO_LEVELS_PATH) -> None:
+    """Marca el fichero de auto-levels con la fecha de notificación de hoy."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["notified_at"] = str(date.today())
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def calculate_and_save(

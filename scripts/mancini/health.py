@@ -500,22 +500,32 @@ def start_day(skip_scan: bool = False, dry_run: bool = False) -> bool:
 
     # 4b. Calcular auto-levels si no existen o son de otro día
     try:
-        from scripts.mancini.auto_levels import load_auto_levels, calculate_and_save as _calc_auto, AUTO_LEVELS_PATH
+        from scripts.mancini.auto_levels import (
+            load_auto_levels, calculate_and_save as _calc_auto,
+            mark_auto_levels_notified, AUTO_LEVELS_PATH,
+        )
         existing_auto = load_auto_levels(AUTO_LEVELS_PATH)
+        already_notified = (
+            existing_auto is not None and existing_auto.notified_at == today
+        )
         if not existing_auto or existing_auto.fecha != today:
             print("  Calculando niveles técnicos autónomos...")
             if not dry_run:
                 _auto = _calc_auto()
                 if _auto:
                     print(f"  Auto-levels calculados: {len(_auto.levels)} niveles")
-                    try:
-                        notifier.notify_auto_levels(_auto)
-                    except Exception as _ne:
-                        print(f"  ⚠️  notify_auto_levels: {_ne}")
+                    if not already_notified:
+                        try:
+                            notifier.notify_auto_levels(_auto)
+                            mark_auto_levels_notified(AUTO_LEVELS_PATH)
+                        except Exception as _ne:
+                            print(f"  ⚠️  notify_auto_levels: {_ne}")
                 else:
                     print("  ⚠️  Auto-levels: datos insuficientes (data.json/indicators.json no disponibles)")
         else:
             print(f"  Auto-levels de hoy ya existen ({len(existing_auto.levels)} niveles). Sin recalcular.")
+            if already_notified:
+                print("  Notificación ya enviada hoy. Sin reenviar.")
     except Exception as _e:
         print(f"  ⚠️  Auto-levels WARN: {_e}")
 
