@@ -30,6 +30,10 @@ _TERM_WIDTH    = 70
 
 def print_gex_terminal(snapshot: dict) -> None:
     """Imprime el dashboard ASCII del perfil GEX en el terminal."""
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     spot          = snapshot.get("spot") or 0.0
     net_gex_bn    = snapshot.get("net_gex_bn")
     signal_gex    = snapshot.get("signal_gex", "N/A")
