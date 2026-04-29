@@ -120,6 +120,46 @@ class TastyTradeClient:
         except Exception:
             return None
 
+    def get_equity_quote(self, symbol: str) -> dict:
+        """
+        Devuelve el precio actual de un equity o índice via DXLink.
+
+        Para índices como '$SPX.X', bid/ask representan el nivel actual del índice.
+        El mark (bid+ask)/2 es el precio principal.
+
+        Args:
+            symbol: símbolo DXLink del instrumento, ej. '$SPX.X'
+
+        Returns:
+            {
+                "symbol": str,
+                "last":   float,  # mark (bid+ask)/2
+                "mark":   float,
+                "bid":    float,
+                "ask":    float,
+                "status": str,    # "OK" | "ERROR" | "MISSING_DATA"
+            }
+        """
+        result = {
+            "symbol": symbol,
+            "last":   0.0,
+            "mark":   0.0,
+            "bid":    0.0,
+            "ask":    0.0,
+            "status": "MISSING_DATA",
+        }
+        try:
+            data = self._loop.run_until_complete(
+                self._fetch_equity_quote_async(symbol)
+            )
+            if data:
+                result.update(data)
+        except EnvironmentError:
+            raise
+        except Exception:
+            result["status"] = "ERROR"
+        return result
+
     def get_option_chain(
         self,
         symbol: str,
@@ -272,6 +312,28 @@ class TastyTradeClient:
             })
 
         return result
+
+    async def _fetch_equity_quote_async(self, symbol: str) -> dict | None:
+        """Obtiene quote de un equity/índice via DXLink (una sola lectura)."""
+        async with DXLinkStreamer(self.session) as streamer:
+            await streamer.subscribe(Quote, [symbol])
+            quote = await asyncio.wait_for(
+                streamer.get_event(Quote),
+                timeout=10.0,
+            )
+
+        bid  = float(quote.bid_price or 0)
+        ask  = float(quote.ask_price or 0)
+        mark = round((bid + ask) / 2, 2) if bid and ask else 0.0
+
+        return {
+            "symbol": symbol,
+            "last":   mark,
+            "mark":   mark,
+            "bid":    bid,
+            "ask":    ask,
+            "status": "OK" if mark > 0 else "MISSING_DATA",
+        }
 
     async def _resolve_and_fetch(self, product_code: str) -> dict | None:
         """

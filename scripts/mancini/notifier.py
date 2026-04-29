@@ -373,6 +373,80 @@ def notify_monitor_crash(error: str) -> bool:
     return send_telegram(msg)
 
 
+def notify_gex_open(snapshot: dict, auto_levels=None) -> bool:
+    """Primer snapshot GEX del día (~9:35 ET): niveles GEX + técnicos combinados y ordenados."""
+    ts = snapshot.get("ts", "")[:16].replace("T", " ")
+    spot = snapshot.get("spot")
+    es_basis = snapshot.get("es_basis")
+    net = snapshot.get("net_gex_bn")
+    signal = snapshot.get("signal_gex", "")
+    regime = snapshot.get("regime_text", "")
+
+    def _es(v: float | None) -> str:
+        if v is None or es_basis is None:
+            return ""
+        return f" \\(~ES {int(round(v * es_basis))}\\)"
+
+    spot_str = f"SPX {int(spot)}" if spot else "SPX N/A"
+    es_str = f" / ES {int(round(spot * es_basis))}" if spot and es_basis else ""
+    net_str = f"{net:+.2f}B" if net is not None else "N/A"
+
+    lines = [
+        f"📊 *Apertura GEX \\| {_esc(ts)} ET*",
+        "",
+        f"📈 {_esc(spot_str)}{_esc(es_str)} \\| Net: {_esc(net_str)}",
+        f"🔮 {_esc(signal)}",
+        "",
+    ]
+
+    # Nivel combinados: GEX del snapshot + niveles técnicos del premarket
+    entries: list[tuple[float, str]] = []
+
+    for key, icon, label in [
+        ("call_wall",    "📈", "CALL WALL"),
+        ("flip_level",   "🎯", "FLIP"),
+        ("control_node", "🔴", "CN"),
+        ("put_wall",     "🟢", "PUT WALL"),
+    ]:
+        val = snapshot.get(key)
+        if val is not None:
+            entries.append((float(val), f"{icon} {label}{_es(float(val))}"))
+
+    chop_low  = snapshot.get("chop_zone_low")
+    chop_high = snapshot.get("chop_zone_high")
+    if chop_low is not None and chop_high is not None:
+        mid = (chop_low + chop_high) / 2
+        entries.append((mid, f"🔀 CHOP {int(chop_low)}\\-{int(chop_high)}"))
+
+    if spot:
+        entries.append((spot, f"▶ {_esc(spot_str)}{_esc(es_str)}"))
+
+    if auto_levels is not None:
+        group_icon = {
+            "daily":     "📊",
+            "weekly":    "📅",
+            "monthly":   "📆",
+            "round":     "⬜",
+            "overnight": "🌙",
+        }
+        for lvl in auto_levels.levels:
+            icon = group_icon.get(lvl.group, "⬜")
+            entries.append((float(lvl.value), f"{icon} {_esc(lvl.label)}"))
+
+    entries.sort(key=lambda x: x[0], reverse=True)
+
+    if entries:
+        lines.append("*Niveles:*")
+        for val, label in entries:
+            lines.append(f"  {int(val)} {label}")
+        lines.append("")
+
+    if regime and regime != "Régimen GEX no disponible":
+        lines.append(f"_{_esc(regime)}_")
+
+    return send_telegram("\n".join(lines).strip())
+
+
 def notify_gex_shift(shift: dict) -> bool:
     """Alerta: el flip_level o control_node se han desplazado > 10 pts intraday."""
     shift_type = shift.get("type", "")
