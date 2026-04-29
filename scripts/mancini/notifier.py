@@ -379,6 +379,7 @@ def notify_gex_shift(shift: dict) -> bool:
     spot        = shift.get("spot")
     ts          = shift.get("ts", "")[:16].replace("T", " ")  # "2026-04-29 14:32"
     regime_text = shift.get("regime_text", "")
+    es_basis    = shift.get("es_basis")
 
     flip_prev = shift.get("flip_prev")
     flip_curr = shift.get("flip_curr")
@@ -387,6 +388,12 @@ def notify_gex_shift(shift: dict) -> bool:
 
     def _fmt(v) -> str:
         return str(int(v)) if v is not None else "N/D"
+
+    def _es(v) -> str:
+        """Equivalente /ES entre paréntesis, si hay basis disponible."""
+        if v is None or es_basis is None:
+            return ""
+        return f" \\(\\~ES {int(round(v * es_basis))}\\)"
 
     def _delta(prev, curr) -> str:
         if prev is None or curr is None:
@@ -398,19 +405,25 @@ def notify_gex_shift(shift: dict) -> bool:
 
     if shift_type in ("FLIP_SHIFT", "BOTH"):
         lines.append(
-            f"🎯 Flip: {_esc(_fmt(flip_prev))} → *{_esc(_fmt(flip_curr))}*"
+            f"🎯 Flip: SPX {_esc(_fmt(flip_prev))}{_esc(_es(flip_prev))} "
+            f"→ *SPX {_esc(_fmt(flip_curr))}{_esc(_es(flip_curr))}*"
             f"{_esc(_delta(flip_prev, flip_curr))}"
         )
     else:
-        lines.append(f"🎯 Flip: {_esc(_fmt(flip_curr))} \\(sin cambio\\)")
+        lines.append(
+            f"🎯 Flip: SPX {_esc(_fmt(flip_curr))}{_esc(_es(flip_curr))} \\(sin cambio\\)"
+        )
 
     if shift_type in ("CONTROL_NODE_SHIFT", "BOTH"):
         lines.append(
-            f"🔴 CN:   {_esc(_fmt(cn_prev))} → *{_esc(_fmt(cn_curr))}*"
+            f"🔴 CN:   SPX {_esc(_fmt(cn_prev))}{_esc(_es(cn_prev))} "
+            f"→ *SPX {_esc(_fmt(cn_curr))}{_esc(_es(cn_curr))}*"
             f"{_esc(_delta(cn_prev, cn_curr))}"
         )
     else:
-        lines.append(f"🔴 CN:   {_esc(_fmt(cn_curr))} \\(sin cambio\\)")
+        lines.append(
+            f"🔴 CN:   SPX {_esc(_fmt(cn_curr))}{_esc(_es(cn_curr))} \\(sin cambio\\)"
+        )
 
     lines += [
         "",

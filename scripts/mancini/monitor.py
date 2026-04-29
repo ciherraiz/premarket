@@ -879,6 +879,8 @@ class ManciniMonitor:
         """
         Captura snapshot GEX 0DTE, lo persiste y detecta shifts de niveles.
         Solo activo durante la sesión regular (9:30–16:00 ET).
+        price: precio /ES actual (usado como es_price para el basis de traducción).
+        El spot SPX cash se obtiene via yfinance dentro de take_gex_snapshot.
         """
         from scripts.gex_intraday import take_gex_snapshot, save_snapshot, detect_shift
 
@@ -888,7 +890,9 @@ class ManciniMonitor:
         if not (session_start <= now <= session_end):
             return
 
-        snapshot = take_gex_snapshot(client=self.client, spot=price)
+        # spot=None → take_gex_snapshot obtiene SPX cash via yfinance
+        # es_price=price → /ES del monitor, para calcular basis de traducción
+        snapshot = take_gex_snapshot(client=self.client, spot=None, es_price=price)
         if snapshot.get("status") != "OK":
             _log(f"GEX snapshot: {snapshot.get('status')}")
             return
@@ -901,11 +905,15 @@ class ManciniMonitor:
             notifier.notify_gex_shift(shift)
 
         self._last_gex_snapshot = snapshot
-        net = snapshot.get("net_gex_bn")
-        net_str = f"{net:+.2f}B" if net is not None else "N/A"
+        net      = snapshot.get("net_gex_bn")
+        net_str  = f"{net:+.2f}B" if net is not None else "N/A"
+        basis    = snapshot.get("es_basis")
+        flip_spx = snapshot.get("flip_level")
+        flip_es  = round(flip_spx * basis) if (flip_spx and basis) else None
+        flip_str = f"{flip_spx}(~ES {flip_es})" if flip_es else str(flip_spx)
         _log(
-            f"GEX snap — flip={snapshot.get('flip_level')} "
-            f"CN={snapshot.get('control_node')} net={net_str}"
+            f"GEX snap — SPX {snapshot.get('spot'):.0f} "
+            f"flip={flip_str} CN={snapshot.get('control_node')} net={net_str}"
         )
 
     # ── Intraday tweet updates ─────────────────────────────────────
