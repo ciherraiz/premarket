@@ -43,8 +43,9 @@ from scripts.mancini.auto_levels import load_auto_levels, AUTO_LEVELS_PATH
 ET = ZoneInfo("America/New_York")
 
 # ── Constantes ──────────────────────────────────────────────────────
-POLL_INTERVAL_S = 15       # Polling de precio /ES (con plan activo)
+POLL_INTERVAL_S       = 15   # Polling de precio /ES (con plan activo)
 TWEET_POLL_INTERVAL_S = 600  # Polling de tweets (10 min) — buscar plan o cambios intraday
+GEX_POLL_INTERVAL_S   = 600  # Polling de GEX intraday (10 min) — snapshots 0DTE
 SESSION_START_HOUR = 3   # 03:00 ET (09:00 CEST) — apertura sesión europea
 SESSION_END_HOUR = 16    # 16:00 ET (22:00 CEST) — cierre mercado regular
 
@@ -199,6 +200,8 @@ class ManciniMonitor:
         self.price_history: list[tuple[str, float]] = []
         self._plan_mtime: float = 0
         self._last_tweet_check: float = 0
+        self._last_gex_poll_ts: float = 0
+        self._last_gex_snapshot: dict | None = None
         self._level_contexts: dict[float, str] = {}  # level → último contexto conocido
         self._active_signals: dict[float, FailedBreakdownSignal] = {}  # level → señal activa
 
@@ -850,6 +853,41 @@ class ManciniMonitor:
         else:
             _log(f"Error lanzando orden entry: {entry_result.error}")
 
+    # ── GEX intraday snapshots ────────────────────────────────────
+
+    def _poll_gex(self, price: float) -> None:
+        """
+        Captura snapshot GEX 0DTE, lo persiste y detecta shifts de niveles.
+        Solo activo durante la sesión regular (9:30–16:00 ET).
+        """
+        from scripts.gex_intraday import take_gex_snapshot, save_snapshot, detect_shift
+
+        now = _now_et()
+        session_start = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+        session_end   = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+        if not (session_start <= now <= session_end):
+            return
+
+        snapshot = take_gex_snapshot(client=self.client, spot=price)
+        if snapshot.get("status") != "OK":
+            _log(f"GEX snapshot: {snapshot.get('status')}")
+            return
+
+        save_snapshot(snapshot)
+
+        shift = detect_shift(self._last_gex_snapshot, snapshot)
+        if shift:
+            _log(f"GEX shift: {shift['type']} flip={shift['flip_prev']}→{shift['flip_curr']}")
+            notifier.notify_gex_shift(shift)
+
+        self._last_gex_snapshot = snapshot
+        net = snapshot.get("net_gex_bn")
+        net_str = f"{net:+.2f}B" if net is not None else "N/A"
+        _log(
+            f"GEX snap — flip={snapshot.get('flip_level')} "
+            f"CN={snapshot.get('control_node')} net={net_str}"
+        )
+
     # ── Intraday tweet updates ─────────────────────────────────────
 
     def _seed_processed_tweets_silent(self) -> None:
@@ -1224,6 +1262,11 @@ class ManciniMonitor:
                             and now_ts - self._last_tweet_check >= self.tweet_poll_interval):
                         self._last_tweet_check = now_ts
                         self.check_intraday_updates()
+
+                    # Snapshot GEX intraday (cada 10 min, independiente del ciclo de tweets)
+                    if now_ts - self._last_gex_poll_ts >= GEX_POLL_INTERVAL_S:
+                        self._poll_gex(price)
+                        self._last_gex_poll_ts = now_ts
 
                     self.save_state()
 

@@ -400,6 +400,7 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
         "control_node":      None,
         "chop_zone_low":     None,
         "chop_zone_high":    None,
+        "gex_by_strike":     {},
         "gex_pct_by_strike": {},
         "regime_text":       "Régimen GEX no disponible",
         "spot":              spot,
@@ -531,7 +532,10 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
             if net_gex_bn < 0:
                 base["control_node"] = min(gex_0dte, key=gex_0dte.get)
 
-            # GEX relativo por strike
+            # GEX absoluto y relativo por strike (0DTE)
+            base["gex_by_strike"] = {
+                str(int(k)): round(v, 6) for k, v in gex_0dte.items()
+            }
             max_abs = max(abs(v) for v in gex_0dte.values())
             if max_abs > 0:
                 base["gex_pct_by_strike"] = {

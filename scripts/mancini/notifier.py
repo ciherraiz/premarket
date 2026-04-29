@@ -365,6 +365,56 @@ def notify_monitor_crash(error: str) -> bool:
     return send_telegram(msg)
 
 
+def notify_gex_shift(shift: dict) -> bool:
+    """Alerta: el flip_level o control_node se han desplazado > 10 pts intraday."""
+    shift_type = shift.get("type", "")
+    spot        = shift.get("spot")
+    ts          = shift.get("ts", "")[:16].replace("T", " ")  # "2026-04-29 14:32"
+    regime_text = shift.get("regime_text", "")
+
+    flip_prev = shift.get("flip_prev")
+    flip_curr = shift.get("flip_curr")
+    cn_prev   = shift.get("cn_prev")
+    cn_curr   = shift.get("cn_curr")
+
+    def _fmt(v) -> str:
+        return str(int(v)) if v is not None else "N/D"
+
+    def _delta(prev, curr) -> str:
+        if prev is None or curr is None:
+            return ""
+        d = curr - prev
+        return f" \\({'+' if d >= 0 else ''}{int(d)} pts\\)"
+
+    lines = ["⚡ *GEX Shift detectado*", ""]
+
+    if shift_type in ("FLIP_SHIFT", "BOTH"):
+        lines.append(
+            f"🎯 Flip: {_esc(_fmt(flip_prev))} → *{_esc(_fmt(flip_curr))}*"
+            f"{_esc(_delta(flip_prev, flip_curr))}"
+        )
+    else:
+        lines.append(f"🎯 Flip: {_esc(_fmt(flip_curr))} \\(sin cambio\\)")
+
+    if shift_type in ("CONTROL_NODE_SHIFT", "BOTH"):
+        lines.append(
+            f"🔴 CN:   {_esc(_fmt(cn_prev))} → *{_esc(_fmt(cn_curr))}*"
+            f"{_esc(_delta(cn_prev, cn_curr))}"
+        )
+    else:
+        lines.append(f"🔴 CN:   {_esc(_fmt(cn_curr))} \\(sin cambio\\)")
+
+    lines += [
+        "",
+        f"📊 Spot: {_esc(_fmt(spot))} \\| {_esc(ts)} ET",
+    ]
+
+    if regime_text and regime_text != "Régimen GEX no disponible":
+        lines += ["", f"_{_esc(regime_text)}_"]
+
+    return send_telegram("\n".join(lines))
+
+
 def notify_session_summary(fecha: str, trades_count: int,
                            total_pnl: float) -> bool:
     """Alerta: resumen de la sesión al finalizar."""
