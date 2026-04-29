@@ -125,17 +125,25 @@ def notify_auto_levels(auto) -> bool:
     return send_telegram("\n".join(lines).strip())
 
 
-def notify_approaching_level(level: float, price: float, distance: float) -> bool:
+def notify_approaching_level(level: float, price: float, distance: float,
+                             gex_snapshot: dict | None = None) -> bool:
     """Alerta: precio entrando en zona de alerta del nivel clave."""
-    msg = "\n".join([
+    lines = [
         "👀 *Zona de alerta*",
         "",
         f"📍 Nivel: {_esc(level)}",
         f"📊 ES: {_esc(f'{price:.2f}')} \\({_esc(f'{distance:+.1f}')} pts\\)",
         "",
         "Precio próximo al nivel — vigilar posible breakdown\\.",
-    ])
-    return send_telegram(msg)
+    ]
+    if gex_snapshot:
+        low  = gex_snapshot.get("chop_zone_low")
+        high = gex_snapshot.get("chop_zone_high")
+        if low is not None and high is not None and low <= price <= high:
+            lines.append(
+                f"🔀 En Chop Zone GEX \\({_esc(f'{low:.0f}')}\\-{_esc(f'{high:.0f}')}\\) \\— precaución"
+            )
+    return send_telegram("\n".join(lines))
 
 
 def notify_breakdown(level: float, price: float, depth: float) -> bool:

@@ -88,6 +88,17 @@ def _log(msg: str) -> None:
     print(f"[mancini {ts}] {msg}", flush=True)
 
 
+def _in_chop_zone(price: float, snapshot: dict | None) -> bool:
+    """Retorna True si el precio está dentro de la Chop Zone del último snapshot GEX."""
+    if snapshot is None:
+        return False
+    low  = snapshot.get("chop_zone_low")
+    high = snapshot.get("chop_zone_high")
+    if low is None or high is None:
+        return False
+    return low <= price <= high
+
+
 def _active_levels(plan: DailyPlan, state_path: Path = STATE_PATH) -> list[float]:
     """Niveles del plan que no estaban en DONE/EXPIRED en el estado guardado."""
     yesterday_detectors = load_detectors(state_path)
@@ -513,7 +524,16 @@ class ManciniMonitor:
 
             # Alerta Telegram en STANDBY → ALERT_ZONE y en arranque con precio ya en zona (None → ALERT_ZONE)
             if prev in ("STANDBY", None) and ctx == "ALERT_ZONE":
-                notifier.notify_approaching_level(detector.level, price, dist)
+                if _in_chop_zone(price, self._last_gex_snapshot):
+                    snap = self._last_gex_snapshot
+                    _log(
+                        f"⚠️  Chop Zone GEX [{snap['chop_zone_low']:.0f}–{snap['chop_zone_high']:.0f}]"
+                        f" — señal menos fiable"
+                    )
+                notifier.notify_approaching_level(
+                    detector.level, price, dist,
+                    gex_snapshot=self._last_gex_snapshot,
+                )
 
     def _handle_transition(self, t: StateTransition, price: float,
                            ts: str) -> dict:
