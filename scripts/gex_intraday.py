@@ -80,7 +80,7 @@ def take_gex_snapshot(client=None, spot: float | None = None,
         # Obtener SPX cash via TastyTrade
         if spot is None or spot <= 0:
             try:
-                quote = client.get_equity_quote("$SPX.X")
+                quote = client.get_equity_quote("SPX")
                 if quote.get("status") == "OK":
                     spot = quote.get("last") or quote.get("mark")
             except Exception:
