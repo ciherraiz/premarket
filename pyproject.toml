@@ -13,6 +13,7 @@ dependencies = [
     "scipy>=1.13",
     "anthropic>=0.40",
     "matplotlib>=3.10.8",
+    "numpy>=1.26",
     "psutil>=7.2.2",
 ]
 

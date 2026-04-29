@@ -2,7 +2,7 @@
 
 ## Estado
 
-- [ ] Implementado
+- [x] Implementado
 
 ## Objetivo
 
