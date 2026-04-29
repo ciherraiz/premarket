@@ -23,7 +23,7 @@ from scripts.gex_heatmap import print_gex_terminal, build_gex_heatmap, _load_sou
 
 def _make_snapshot(flip=5200.0, cn=5150.0, spot=5215.0,
                    chop_low=5195.0, chop_high=5205.0,
-                   ts="2026-04-29T14:32:00") -> dict:
+                   ts="2026-04-29T14:32:00", es_basis=1.0058) -> dict:
     strikes = [5100, 5150, 5175, 5195, 5200, 5205, 5215, 5225, 5300]
     gex_bn   = {str(s): round((s - 5200) * 0.001, 4) for s in strikes}
     max_abs  = max(abs(v) for v in gex_bn.values()) or 1
@@ -32,6 +32,7 @@ def _make_snapshot(flip=5200.0, cn=5150.0, spot=5215.0,
         "ts":                ts,
         "ts_et":             ts + "-04:00",
         "spot":              spot,
+        "es_basis":          es_basis,
         "net_gex_bn":        -1.23,
         "signal_gex":        "SHORT_GAMMA_SUAVE",
         "regime_text":       "Dealers SHORT gamma bajo 5200 — rebotes débiles",
@@ -264,3 +265,46 @@ def test_load_source_specific_date(tmp_path, monkeypatch):
     snaps, source = _load_source("2026-04-28")
     assert len(snaps) == 1
     assert "2026-04-28" in source
+
+
+# ---------------------------------------------------------------------------
+# Grupo 4: visualización SPX / ES en dashboard terminal
+# ---------------------------------------------------------------------------
+
+
+def test_print_gex_terminal_shows_es_spot_when_basis(capsys):
+    """Con es_basis en el snapshot, la cabecera muestra el precio /ES."""
+    snap = _make_snapshot(spot=5215.0, es_basis=1.0058)
+    print_gex_terminal(snap)
+    out = capsys.readouterr().out
+    # ES spot = round(5215 * 1.0058) = 5245
+    assert "ES" in out
+    assert "5245" in out
+
+
+def test_print_gex_terminal_no_es_when_no_basis(capsys):
+    """Sin es_basis, la cabecera solo muestra SPX."""
+    snap = _make_snapshot(spot=5215.0, es_basis=None)
+    print_gex_terminal(snap)
+    out = capsys.readouterr().out
+    assert "SPX 5215" in out
+    # No debe aparecer "/ ES" en la cabecera
+    assert "/ ES" not in out
+
+
+def test_print_gex_terminal_call_wall_shows_es(capsys):
+    """La etiqueta Call Wall incluye el equivalente /ES cuando hay basis."""
+    # call_wall fijo a 5300.0 en _make_snapshot; ES = round(5300 * 1.006) = 5332
+    snap = _make_snapshot(spot=5215.0, es_basis=1.006)
+    print_gex_terminal(snap)
+    out = capsys.readouterr().out
+    assert "~ES" in out
+    assert "5332" in out
+
+
+def test_print_gex_terminal_call_wall_no_es_without_basis(capsys):
+    """Sin es_basis, las etiquetas de niveles no incluyen equivalente /ES."""
+    snap = _make_snapshot(spot=5215.0, es_basis=None)
+    print_gex_terminal(snap)
+    out = capsys.readouterr().out
+    assert "~ES" not in out

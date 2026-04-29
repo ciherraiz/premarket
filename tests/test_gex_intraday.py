@@ -30,11 +30,13 @@ from scripts.gex_intraday import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_snapshot(flip=5200.0, cn=5150.0, spot=5195.0, status="OK") -> dict:
+def _make_snapshot(flip=5200.0, cn=5150.0, spot=5195.0, status="OK",
+                   es_basis=1.0058) -> dict:
     return {
         "ts":                "2026-04-29T10:00:00",
         "ts_et":             "2026-04-29T10:00:00-04:00",
         "spot":              spot,
+        "es_basis":          es_basis,
         "net_gex_bn":        -1.23,
         "signal_gex":        "SHORT_GAMMA_SUAVE",
         "regime_text":       "Dealers SHORT gamma bajo 5200",
@@ -217,10 +219,10 @@ def test_detect_shift_no_change_returns_none():
 
 
 def test_error_snapshot_has_required_keys():
-    """El snapshot de error contiene todos los campos requeridos."""
+    """El snapshot de error contiene todos los campos requeridos incluido es_basis."""
     err = _error_snapshot(5200.0, "ERROR")
     required = [
-        "ts", "ts_et", "spot", "net_gex_bn", "signal_gex", "regime_text",
+        "ts", "ts_et", "spot", "es_basis", "net_gex_bn", "signal_gex", "regime_text",
         "flip_level", "control_node", "chop_zone_low", "chop_zone_high",
         "put_wall", "call_wall", "gex_by_strike", "gex_pct_by_strike",
         "n_strikes", "status",
@@ -234,4 +236,29 @@ def test_error_snapshot_status_propagated():
     err = _error_snapshot(None, "MISSING_DATA")
     assert err["status"] == "MISSING_DATA"
     assert err["spot"] is None
+    assert err["es_basis"] is None
     assert err["gex_by_strike"] == {}
+
+
+def test_error_snapshot_es_basis_computed_when_both_prices():
+    """Si spot y es_price están disponibles, es_basis se calcula."""
+    err = _error_snapshot(5200.0, "ERROR", es_price=5230.0)
+    assert err["es_basis"] == round(5230.0 / 5200.0, 6)
+
+
+def test_detect_shift_propagates_es_basis():
+    """detect_shift incluye es_basis del snapshot actual en el resultado."""
+    prev = _make_snapshot(flip=5200.0, cn=5150.0)
+    curr = _make_snapshot(flip=5185.0, cn=5150.0, es_basis=1.0061)
+    shift = detect_shift(prev, curr)
+    assert shift is not None
+    assert shift["es_basis"] == 1.0061
+
+
+def test_detect_shift_es_basis_none_when_missing():
+    """Si el snapshot no tiene es_basis, el shift lo propaga como None."""
+    prev = _make_snapshot(flip=5200.0, cn=5150.0, es_basis=None)
+    curr = _make_snapshot(flip=5185.0, cn=5150.0, es_basis=None)
+    shift = detect_shift(prev, curr)
+    assert shift is not None
+    assert shift["es_basis"] is None

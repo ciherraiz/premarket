@@ -30,7 +30,12 @@ _TERM_WIDTH    = 70
 
 def print_gex_terminal(snapshot: dict) -> None:
     """Imprime el dashboard ASCII del perfil GEX en el terminal."""
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     spot          = snapshot.get("spot") or 0.0
+    es_basis      = snapshot.get("es_basis")
     net_gex_bn    = snapshot.get("net_gex_bn")
     signal_gex    = snapshot.get("signal_gex", "N/A")
     regime_text   = snapshot.get("regime_text", "")
@@ -43,6 +48,12 @@ def print_gex_terminal(snapshot: dict) -> None:
     gex_by_strike     = snapshot.get("gex_by_strike", {})
     gex_pct_by_strike = snapshot.get("gex_pct_by_strike", {})
     ts_et = snapshot.get("ts_et", "")
+
+    def _es(v: float | None) -> str:
+        """Equivalente /ES entre paréntesis."""
+        if v is None or es_basis is None:
+            return ""
+        return f"  (~ES {int(round(v * es_basis))})"
 
     # Timestamp: "04/29/26 14:32 ET"
     try:
@@ -60,18 +71,20 @@ def print_gex_terminal(snapshot: dict) -> None:
     # Nearest strike to spot (for ▶ marker)
     nearest_key = min(strikes, key=lambda s: abs(float(s) - spot)) if strikes else None
 
-    # Labels per strike key (str(int(strike)))
+    # Labels per strike key (str(int(strike))) — incluyen equivalente /ES si hay basis
     special: dict[str, str] = {}
     if call_wall is not None:
-        special[str(int(call_wall))] = "Call Wall"
+        special[str(int(call_wall))] = f"Call Wall{_es(call_wall)}"
     if put_wall is not None:
-        special[str(int(put_wall))] = "Put Wall"
+        special[str(int(put_wall))] = f"Put Wall{_es(put_wall)}"
     if control_node is not None:
-        special[str(int(control_node))] = "Control Node *"
+        special[str(int(control_node))] = f"Control Node *{_es(control_node)}"
+
+    es_spot_str = f"  /  ES {int(round(spot * es_basis))}" if es_basis else ""
 
     W = _TERM_WIDTH
     print("═" * W)
-    print(f"  GEX 0DTE  |  SPX {spot:.0f}  |  {ts_display} ET")
+    print(f"  GEX 0DTE  |  SPX {spot:.0f}{es_spot_str}  |  {ts_display} ET")
     print(f"  Net GEX: {net_str}  →  {signal_gex}")
     if regime_text:
         print(f"  {regime_text}")
@@ -413,22 +426,27 @@ def main() -> None:
             f"Net GEX: {net:+.2f}B | {last.get('signal_gex', 'N/A')}\n"
             f"{last.get('regime_text', '')}\n\n"
         )
-        flip = last.get("flip_level")
-        cn   = last.get("control_node")
-        pw   = last.get("put_wall")
-        cw   = last.get("call_wall")
-        cl   = last.get("chop_zone_low")
-        ch   = last.get("chop_zone_high")
+        flip     = last.get("flip_level")
+        cn       = last.get("control_node")
+        pw       = last.get("put_wall")
+        cw       = last.get("call_wall")
+        cl       = last.get("chop_zone_low")
+        ch       = last.get("chop_zone_high")
+        basis    = last.get("es_basis")
+
+        def _cap_es(v):
+            return f" (~ES {int(round(v * basis))})" if (v is not None and basis) else ""
+
         if flip is not None:
-            cap += f"🎯 Flip:      {int(flip)}\n"
+            cap += f"🎯 Flip:      SPX {int(flip)}{_cap_es(flip)}\n"
         if cn is not None:
-            cap += f"🔴 Control:   {int(cn)}\n"
+            cap += f"🔴 Control:   SPX {int(cn)}{_cap_es(cn)}\n"
         if pw is not None:
-            cap += f"🟢 Put Wall:  {int(pw)}\n"
+            cap += f"🟢 Put Wall:  SPX {int(pw)}{_cap_es(pw)}\n"
         if cw is not None:
-            cap += f"🔴 Call Wall: {int(cw)}\n"
+            cap += f"🔴 Call Wall: SPX {int(cw)}{_cap_es(cw)}\n"
         if cl is not None and ch is not None:
-            cap += f"🔀 Chop Zone: {int(cl)}–{int(ch)}\n"
+            cap += f"🔀 Chop Zone: SPX {int(cl)}–{int(ch)}\n"
         n   = len(snapshots)
         ts0 = (snapshots[0].get("ts") or "")[-8:-3]
         ts1 = (last.get("ts") or "")[-8:-3]
