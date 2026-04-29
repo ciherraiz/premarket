@@ -892,7 +892,7 @@ class ManciniMonitor:
         if not (session_start <= now <= session_end):
             return False
 
-        # spot=None → take_gex_snapshot obtiene SPX cash via yfinance
+        # spot=None → take_gex_snapshot obtiene SPX cash via TastyTrade DXLink
         # es_price=price → /ES del monitor, para calcular basis de traducción
         snapshot = take_gex_snapshot(client=self.client, spot=None, es_price=price)
         if snapshot.get("status") != "OK":
