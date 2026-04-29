@@ -233,15 +233,21 @@ def evaluate_signal(
 
 def _parse_gate_response(raw: str) -> GateDecision:
     """Parsea la respuesta JSON del LLM. Fallback conservador si falla."""
-    try:
-        # Limpiar posible markdown
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
+    import re as _re
 
+    text = raw.strip()
+
+    # Extraer bloque ```json ... ``` o ``` ... ```
+    block = _re.search(r"```(?:json)?\s*(.*?)```", text, _re.DOTALL)
+    if block:
+        text = block.group(1).strip()
+
+    # Extraer el primer objeto JSON del texto
+    obj = _re.search(r"\{.*\}", text, _re.DOTALL)
+    if obj:
+        text = obj.group(0)
+
+    try:
         data = json.loads(text)
         return GateDecision(
             execute=bool(data.get("execute", False)),
@@ -251,6 +257,6 @@ def _parse_gate_response(raw: str) -> GateDecision:
     except (json.JSONDecodeError, KeyError, TypeError):
         return GateDecision(
             execute=False,
-            reasoning=f"Error parseando respuesta del gate: {raw[:100]}",
+            reasoning=f"Error parseando respuesta del gate: {raw[:120]}",
             risk_factors=["json_parse_error"],
         )

@@ -459,8 +459,11 @@ def notify_gex_shift(shift: dict) -> bool:
     cn_prev   = shift.get("cn_prev")
     cn_curr   = shift.get("cn_curr")
 
-    def _fmt(v) -> str:
-        return str(int(v)) if v is not None else "N/D"
+    def _fmt(v, prev=None) -> str:
+        if v is not None:
+            return str(int(v))
+        # Contexto: si el nivel desaparece → régimen cambió
+        return "desaparece" if prev is not None else "sin nivel"
 
     def _delta(prev, curr) -> str:
         if prev is None or curr is None:
@@ -472,7 +475,7 @@ def notify_gex_shift(shift: dict) -> bool:
 
     if shift_type in ("FLIP_SHIFT", "BOTH"):
         lines.append(
-            f"🎯 Flip: {_esc(_fmt(flip_prev))} → *{_esc(_fmt(flip_curr))}*"
+            f"🎯 Flip: {_esc(_fmt(flip_prev))} → *{_esc(_fmt(flip_curr, flip_prev))}*"
             f"{_esc(_delta(flip_prev, flip_curr))}"
         )
     else:
@@ -480,7 +483,7 @@ def notify_gex_shift(shift: dict) -> bool:
 
     if shift_type in ("CONTROL_NODE_SHIFT", "BOTH"):
         lines.append(
-            f"🔴 CN:   {_esc(_fmt(cn_prev))} → *{_esc(_fmt(cn_curr))}*"
+            f"🔴 CN:   {_esc(_fmt(cn_prev))} → *{_esc(_fmt(cn_curr, cn_prev))}*"
             f"{_esc(_delta(cn_prev, cn_curr))}"
         )
     else:
