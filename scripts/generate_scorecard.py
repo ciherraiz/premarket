@@ -97,6 +97,23 @@ def print_scorecard(indicators: dict, phase: str = "premarket") -> None:
     flip_signal = net_gex.get("signal_flip", "N/A")
     print(f"  {'Flip Level':<20} {flip_val:<26} {_sign(flip_score):<6} {flip_signal}")
 
+    # Control Node (solo short gamma)
+    control_node = net_gex.get("control_node")
+    if control_node is not None and gex_status == "OK":
+        print(f"  {'  Control Node':<20} {'CN='+str(int(control_node)):<26}")
+
+    # Chop Zone
+    chop_low  = net_gex.get("chop_zone_low")
+    chop_high = net_gex.get("chop_zone_high")
+    if chop_low is not None and chop_high is not None and gex_status == "OK":
+        chop_val = f"{int(chop_low)} – {int(chop_high)}"
+        print(f"  {'  Chop Zone':<20} {chop_val:<26}")
+
+    # Regime text
+    regime_text = net_gex.get("regime_text", "")
+    if regime_text and regime_text != "Régimen GEX no disponible" and gex_status == "OK":
+        print(f"\n  {regime_text}")
+
     print(line)
     print(f"  D-Score (direccional):  {_sign(d_score)}")
     print()

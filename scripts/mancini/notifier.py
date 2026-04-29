@@ -125,17 +125,25 @@ def notify_auto_levels(auto) -> bool:
     return send_telegram("\n".join(lines).strip())
 
 
-def notify_approaching_level(level: float, price: float, distance: float) -> bool:
+def notify_approaching_level(level: float, price: float, distance: float,
+                             gex_snapshot: dict | None = None) -> bool:
     """Alerta: precio entrando en zona de alerta del nivel clave."""
-    msg = "\n".join([
+    lines = [
         "👀 *Zona de alerta*",
         "",
         f"📍 Nivel: {_esc(level)}",
         f"📊 ES: {_esc(f'{price:.2f}')} \\({_esc(f'{distance:+.1f}')} pts\\)",
         "",
         "Precio próximo al nivel — vigilar posible breakdown\\.",
-    ])
-    return send_telegram(msg)
+    ]
+    if gex_snapshot:
+        low  = gex_snapshot.get("chop_zone_low")
+        high = gex_snapshot.get("chop_zone_high")
+        if low is not None and high is not None and low <= price <= high:
+            lines.append(
+                f"🔀 En Chop Zone GEX \\({_esc(f'{low:.0f}')}\\-{_esc(f'{high:.0f}')}\\) \\— precaución"
+            )
+    return send_telegram("\n".join(lines))
 
 
 def notify_breakdown(level: float, price: float, depth: float) -> bool:
@@ -363,6 +371,56 @@ def notify_monitor_crash(error: str) -> bool:
         f"💥 {_esc(error)}",
     ])
     return send_telegram(msg)
+
+
+def notify_gex_shift(shift: dict) -> bool:
+    """Alerta: el flip_level o control_node se han desplazado > 10 pts intraday."""
+    shift_type = shift.get("type", "")
+    spot        = shift.get("spot")
+    ts          = shift.get("ts", "")[:16].replace("T", " ")  # "2026-04-29 14:32"
+    regime_text = shift.get("regime_text", "")
+
+    flip_prev = shift.get("flip_prev")
+    flip_curr = shift.get("flip_curr")
+    cn_prev   = shift.get("cn_prev")
+    cn_curr   = shift.get("cn_curr")
+
+    def _fmt(v) -> str:
+        return str(int(v)) if v is not None else "N/D"
+
+    def _delta(prev, curr) -> str:
+        if prev is None or curr is None:
+            return ""
+        d = curr - prev
+        return f" \\({'+' if d >= 0 else ''}{int(d)} pts\\)"
+
+    lines = ["⚡ *GEX Shift detectado*", ""]
+
+    if shift_type in ("FLIP_SHIFT", "BOTH"):
+        lines.append(
+            f"🎯 Flip: {_esc(_fmt(flip_prev))} → *{_esc(_fmt(flip_curr))}*"
+            f"{_esc(_delta(flip_prev, flip_curr))}"
+        )
+    else:
+        lines.append(f"🎯 Flip: {_esc(_fmt(flip_curr))} \\(sin cambio\\)")
+
+    if shift_type in ("CONTROL_NODE_SHIFT", "BOTH"):
+        lines.append(
+            f"🔴 CN:   {_esc(_fmt(cn_prev))} → *{_esc(_fmt(cn_curr))}*"
+            f"{_esc(_delta(cn_prev, cn_curr))}"
+        )
+    else:
+        lines.append(f"🔴 CN:   {_esc(_fmt(cn_curr))} \\(sin cambio\\)")
+
+    lines += [
+        "",
+        f"📊 Spot: {_esc(_fmt(spot))} \\| {_esc(ts)} ET",
+    ]
+
+    if regime_text and regime_text != "Régimen GEX no disponible":
+        lines += ["", f"_{_esc(regime_text)}_"]
+
+    return send_telegram("\n".join(lines))
 
 
 def notify_session_summary(fecha: str, trades_count: int,

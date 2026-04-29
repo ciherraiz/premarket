@@ -276,3 +276,162 @@ def test_error_no_interrumpe_pipeline():
         assert result["score_flip"] == 0
     except Exception as e:
         raise AssertionError(f"calc_net_gex no debe propagar excepciones, pero lanzó: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Grupo 6: Control Node
+# ---------------------------------------------------------------------------
+
+
+def test_control_node_en_short_gamma():
+    """Short gamma con puts concentradas en 5150 → control_node=5150 (GEX más negativo)"""
+    spot = 5200.0
+    contracts = [
+        _make_contract(5150, "P", oi=10000, gamma=0.003),  # GEX más negativo
+        _make_contract(5200, "P", oi=2000,  gamma=0.001),
+        _make_contract(5250, "C", oi=1000,  gamma=0.001),
+    ]
+    chain = _make_chain(contracts)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
+
+    assert result["status"] == "OK"
+    assert result["control_node"] == 5150
+    assert result["net_gex_bn"] < 0
+
+
+def test_control_node_none_en_long_gamma():
+    """Long gamma (solo calls) → control_node=None"""
+    spot = 5200.0
+    contracts = [
+        _make_contract(5100, "C", oi=5000, gamma=0.002),
+        _make_contract(5200, "C", oi=8000, gamma=0.003),
+        _make_contract(5300, "C", oi=3000, gamma=0.001),
+    ]
+    chain = _make_chain(contracts)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
+
+    assert result["control_node"] is None
+    assert result["net_gex_bn"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Grupo 7: Chop Zone
+# ---------------------------------------------------------------------------
+
+
+def test_chop_zone_calculada_alrededor_del_flip():
+    """Flip detectado → chop_zone_low < flip_level = chop_zone_high"""
+    spot = 5250.0
+    contracts = [
+        _make_contract(5100, "P", oi=5000, gamma=0.002),
+        _make_contract(5200, "C", oi=1000, gamma=0.001),
+        _make_contract(5300, "C", oi=8000, gamma=0.002),
+    ]
+    chain = _make_chain(contracts)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
+
+    assert result["flip_level"] is not None
+    assert result["chop_zone_low"]  is not None
+    assert result["chop_zone_high"] is not None
+    assert result["chop_zone_low"]  < result["flip_level"]
+    assert result["chop_zone_high"] == result["flip_level"]
+
+
+def test_chop_zone_none_sin_flip():
+    """GEX siempre positivo → flip_level=None → chop_zone_low=None, chop_zone_high=None"""
+    spot = 5200.0
+    contracts = [
+        _make_contract(5100, "C", oi=1000, gamma=0.001),
+        _make_contract(5200, "C", oi=2000, gamma=0.001),
+        _make_contract(5300, "C", oi=1500, gamma=0.001),
+    ]
+    chain = _make_chain(contracts)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
+
+    assert result["chop_zone_low"]  is None
+    assert result["chop_zone_high"] is None
+
+
+# ---------------------------------------------------------------------------
+# Grupo 8: GEX relativo por strike
+# ---------------------------------------------------------------------------
+
+
+def test_gex_pct_maximo_es_100():
+    """El strike con mayor abs(GEX) debe tener abs(pct)==100.0"""
+    spot = 5250.0
+    contracts = [
+        _make_contract(5100, "P", oi=10000, gamma=0.003),
+        _make_contract(5200, "P", oi=1000,  gamma=0.001),
+        _make_contract(5300, "C", oi=2000,  gamma=0.002),
+    ]
+    chain = _make_chain(contracts)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
+
+    pct = result["gex_pct_by_strike"]
+    assert len(pct) > 0
+    max_abs_pct = max(abs(v) for v in pct.values())
+    assert max_abs_pct == 100.0
+
+
+def test_gex_pct_vacio_sin_gamma():
+    """Cadena sin gamma válida → gex_pct_by_strike == {}"""
+    spot = 5200.0
+    contracts = [
+        _make_contract(5200, "C", oi=1000, gamma=None),
+        _make_contract(5200, "P", oi=1000, gamma=None),
+    ]
+    chain = _make_chain(contracts)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
+
+    assert result["gex_pct_by_strike"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Grupo 9: Regime Text
+# ---------------------------------------------------------------------------
+
+
+def test_regime_text_short_gamma_incluye_flip():
+    """
+    Short gamma + flip_level → regime_text incluye 'bajo <flip>'.
+
+    Cadena diseñada para tener net_gex < 0 Y cumsum que cruza cero:
+      5000P → cumsum negativo (chop_low)
+      5200C → cumsum cruza a positivo (flip_level=5200)
+      5300P grande → cumsum vuelve negativo (net_gex < 0)
+    """
+    spot = 5200.0
+    contracts = [
+        _make_contract(5000, "P", oi=5000, gamma=0.002),  # GEX ≈ -0.26B
+        _make_contract(5200, "C", oi=5000, gamma=0.003),  # GEX ≈ +0.41B  → cumsum positivo
+        _make_contract(5300, "P", oi=8000, gamma=0.003),  # GEX ≈ -0.62B  → net < 0
+    ]
+    chain = _make_chain(contracts)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
+
+    assert result["status"] == "OK"
+    assert result["net_gex_bn"] < 0, "Debe ser short gamma"
+    assert result["flip_level"] is not None, "Debe existir flip_level"
+    assert "bajo" in result["regime_text"]
+    assert str(int(result["flip_level"])) in result["regime_text"]
+
+
+def test_regime_text_long_gamma_no_incluye_flip():
+    """LONG_GAMMA → regime_text no menciona 'bajo'"""
+    spot = 5200.0
+    contracts = [
+        _make_contract(5100, "C", oi=5000, gamma=0.002),
+        _make_contract(5200, "C", oi=8000, gamma=0.003),
+    ]
+    chain = _make_chain(contracts)
+    result = calc_net_gex(chain, chain, spot=spot, fecha=TODAY)
+
+    assert "bajo" not in result["regime_text"]
+    assert result["regime_text"] != "Régimen GEX no disponible"
+
+
+def test_regime_text_error_devuelve_fallback():
+    """Error en la cadena → regime_text='Régimen GEX no disponible'"""
+    result = calc_net_gex(_empty_chain(), _empty_chain(), spot=5200.0, fecha=TODAY)
+    assert result["regime_text"] == "Régimen GEX no disponible"

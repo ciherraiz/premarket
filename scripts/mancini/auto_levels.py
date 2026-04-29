@@ -38,6 +38,40 @@ class AutoLevels:
     calculated_at: str            # ISO timestamp
 
 
+def _load_gex_levels() -> dict:
+    """
+    Carga niveles GEX del último snapshot intraday disponible.
+    Fallback: indicators.json premarket.
+    """
+    try:
+        from scripts.gex_intraday import load_snapshots
+        snapshots = load_snapshots()
+        if snapshots:
+            last = snapshots[-1]
+            if last.get("status") == "OK":
+                return {
+                    "flip_level":   last.get("flip_level"),
+                    "put_wall":     last.get("put_wall"),
+                    "call_wall":    last.get("call_wall"),
+                    "control_node": last.get("control_node"),
+                }
+    except Exception:
+        pass
+
+    try:
+        ind = json.loads(Path("outputs/indicators.json").read_text(encoding="utf-8"))
+        pre_ind = ind.get("premarket", ind)
+        ng = pre_ind.get("net_gex", {})
+        return {
+            "flip_level":   ng.get("flip_level"),
+            "put_wall":     ng.get("put_wall"),
+            "call_wall":    ng.get("call_wall"),
+            "control_node": ng.get("control_node"),
+        }
+    except Exception:
+        return {}
+
+
 def fetch_weekly_ohlc(symbol: str = "^GSPC", bars: int = 4) -> pd.DataFrame | None:
     """Descarga barras semanales via yfinance. Retorna DataFrame con OHLC o None si falla."""
     try:
@@ -227,7 +261,12 @@ def build_auto_levels(
         ))
 
     # ── Grupo E: GEX ───────────────────────────────────────────────────
-    for key, label in [("flip_level", "FLIP"), ("put_wall", "PUT_WALL"), ("call_wall", "CALL_WALL")]:
+    for key, label in [
+        ("flip_level",   "FLIP"),
+        ("put_wall",     "PUT_WALL"),
+        ("call_wall",    "CALL_WALL"),
+        ("control_node", "CONTROL_NODE"),
+    ]:
         val = gex_levels.get(key)
         if val is not None:
             levels.append(TechnicalLevel(value=adj(float(val)), label=label, group="gex", priority=1))
@@ -305,19 +344,21 @@ def calculate_and_save(
     if es_spot is None:
         return None
 
-    # GEX levels desde indicators.json
-    gex_levels: dict = {}
-    try:
-        ind = json.loads(Path(indicators_path).read_text(encoding="utf-8"))
-        pre_ind = ind.get("premarket", ind)
-        ng = pre_ind.get("net_gex", {})
-        gex_levels = {
-            "flip_level": ng.get("flip_level"),
-            "put_wall":   ng.get("put_wall"),
-            "call_wall":  ng.get("call_wall"),
-        }
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
+    # GEX levels — preferir snapshot intraday si existe, fallback a indicators.json
+    gex_levels = _load_gex_levels()
+    if not gex_levels:
+        try:
+            ind = json.loads(Path(indicators_path).read_text(encoding="utf-8"))
+            pre_ind = ind.get("premarket", ind)
+            ng = pre_ind.get("net_gex", {})
+            gex_levels = {
+                "flip_level":   ng.get("flip_level"),
+                "put_wall":     ng.get("put_wall"),
+                "call_wall":    ng.get("call_wall"),
+                "control_node": ng.get("control_node"),
+            }
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
 
     weekly_df = fetch_weekly_ohlc()
     monthly_df = fetch_monthly_ohlc()

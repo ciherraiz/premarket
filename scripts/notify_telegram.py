@@ -211,10 +211,15 @@ def build_premarket_message(indicators: dict) -> str:
     else:
         flip_val = f"\\[{_esc(gex.get('status', 'ERROR'))}\\]"
 
-    flip_disp = _esc(_fmt(flip_level, ".0f")) if flip_level is not None else "N/D"
-    put_wall  = _esc(_fmt(gex.get("put_wall"),  ".0f"))
-    call_wall = _esc(_fmt(gex.get("call_wall"), ".0f"))
-    max_pain  = _esc(_fmt(gex.get("max_pain"),  ".0f"))
+    flip_disp    = _esc(_fmt(flip_level, ".0f")) if flip_level is not None else "N/D"
+    put_wall     = _esc(_fmt(gex.get("put_wall"),      ".0f"))
+    call_wall    = _esc(_fmt(gex.get("call_wall"),     ".0f"))
+    max_pain     = _esc(_fmt(gex.get("max_pain"),      ".0f"))
+    control_node = _esc(_fmt(gex.get("control_node"),  ".0f")) if gex.get("control_node") is not None else None
+    chop_low     = gex.get("chop_zone_low")
+    chop_high    = gex.get("chop_zone_high")
+    chop_disp    = (f"{int(chop_low)} \\– {int(chop_high)}" if chop_low is not None and chop_high is not None else None)
+    regime_text  = gex.get("regime_text", "")
 
     lines = [
         f"📊 *SPX 0DTE — Premarket* \\| {_esc(fecha)}",
@@ -232,9 +237,12 @@ def build_premarket_message(indicators: dict) -> str:
         "",
         "━━━ Niveles Clave ━━━━━━━━━━━━━━━━━━━━",
         f"🎯 Flip:      {flip_disp}",
+        *([ f"🔴 Control:   {control_node}" ] if control_node else []),
+        *([ f"🔀 Chop:      {chop_disp}" ]    if chop_disp   else []),
         f"🟢 Put Wall:  {put_wall}",
         f"🔴 Call Wall: {call_wall}",
         f"⚡ Max Pain:  {max_pain}",
+        *([ f"📋 _{_esc(regime_text)}_" ] if regime_text and regime_text != "Régimen GEX no disponible" else []),
         "",
         "⚠️ _Scorecard orientativo — aguardar Open Phase a las 10:15 ET_",
     ]
@@ -274,11 +282,16 @@ def build_open_message(indicators: dict, window: int = 30) -> str:
         "risk_profile": "N/D", "emoji_short": "⚪", "emoji_long": "🛡️",
     })
 
-    flip_level = gex.get("flip_level")
-    flip_disp  = _esc(_fmt(flip_level, ".0f")) if flip_level is not None else "N/D"
-    put_wall   = _esc(_fmt(gex.get("put_wall"),  ".0f"))
-    call_wall  = _esc(_fmt(gex.get("call_wall"), ".0f"))
-    max_pain   = _esc(_fmt(gex.get("max_pain"),  ".0f"))
+    flip_level   = gex.get("flip_level")
+    flip_disp    = _esc(_fmt(flip_level, ".0f")) if flip_level is not None else "N/D"
+    put_wall     = _esc(_fmt(gex.get("put_wall"),     ".0f"))
+    call_wall    = _esc(_fmt(gex.get("call_wall"),    ".0f"))
+    max_pain     = _esc(_fmt(gex.get("max_pain"),     ".0f"))
+    control_node = _esc(_fmt(gex.get("control_node"), ".0f")) if gex.get("control_node") is not None else None
+    chop_low     = gex.get("chop_zone_low")
+    chop_high    = gex.get("chop_zone_high")
+    chop_disp    = (f"{int(chop_low)} \\– {int(chop_high)}" if chop_low is not None and chop_high is not None else None)
+    regime_text  = gex.get("regime_text", "")
 
     def _open_row(d: dict, label: str, val_key: str, fmt_str: str,
                   signal_key: str, score_key: str) -> str:
@@ -323,9 +336,12 @@ def build_open_message(indicators: dict, window: int = 30) -> str:
         "",
         "━━━ Niveles ━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"🎯 Flip:      {flip_disp}",
+        *([ f"🔴 Control:   {control_node}" ] if control_node else []),
+        *([ f"🔀 Chop:      {chop_disp}" ]    if chop_disp   else []),
         f"🟢 Put Wall:  {put_wall}",
         f"🔴 Call Wall: {call_wall}",
         f"⚡ Max Pain:  {max_pain}",
+        *([ f"📋 _{_esc(regime_text)}_" ] if regime_text and regime_text != "Régimen GEX no disponible" else []),
     ]
     return "\n".join(lines)
 

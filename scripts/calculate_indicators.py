@@ -388,20 +388,26 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
         fecha:       fecha del análisis "YYYY-MM-DD"
     """
     base = {
-        "net_gex_bn":  None,
-        "score_gex":   0,
-        "signal_gex":  None,
-        "flip_level":  None,
-        "score_flip":  0,
-        "signal_flip": "SIN_FLIP",
-        "put_wall":    None,
-        "call_wall":   None,
-        "max_pain":    None,
-        "spot":        spot,
-        "n_strikes":   0,
-        "n_expiries":  0,
-        "status":      "OK",
-        "fecha":       fecha,
+        "net_gex_bn":        None,
+        "score_gex":         0,
+        "signal_gex":        None,
+        "flip_level":        None,
+        "score_flip":        0,
+        "signal_flip":       "SIN_FLIP",
+        "put_wall":          None,
+        "call_wall":         None,
+        "max_pain":          None,
+        "control_node":      None,
+        "chop_zone_low":     None,
+        "chop_zone_high":    None,
+        "gex_by_strike":     {},
+        "gex_pct_by_strike": {},
+        "regime_text":       "Régimen GEX no disponible",
+        "spot":              spot,
+        "n_strikes":         0,
+        "n_expiries":        0,
+        "status":            "OK",
+        "fecha":             fecha,
     }
 
     try:
@@ -494,20 +500,24 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
             base["put_wall"]  = min(gex_0dte, key=gex_0dte.get)
             base["call_wall"] = max(gex_0dte, key=gex_0dte.get)
 
-            # Flip Level (IND-04)
+            # Flip Level (IND-04) + Chop Zone
             strikes_sorted   = sorted(gex_0dte.keys())
             cumsum           = 0.0
             started_negative = False
             flip_level       = None
+            chop_zone_low    = None
             for s in strikes_sorted:
                 cumsum += gex_0dte[s]
                 if cumsum < 0:
                     started_negative = True
+                    chop_zone_low = s
                 if started_negative and cumsum >= 0:
                     flip_level = s
                     break
 
-            base["flip_level"] = flip_level
+            base["flip_level"]    = flip_level
+            base["chop_zone_low"]  = chop_zone_low if flip_level is not None else None
+            base["chop_zone_high"] = flip_level
             if flip_level is None:
                 base["score_flip"]  = 0
                 base["signal_flip"] = "SIN_FLIP"
@@ -517,6 +527,31 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
             else:
                 base["score_flip"]  = -2
                 base["signal_flip"] = "BAJO_FLIP"
+
+            # Control Node — strike de mayor concentración de GEX negativo (solo short gamma)
+            if net_gex_bn < 0:
+                base["control_node"] = min(gex_0dte, key=gex_0dte.get)
+
+            # GEX absoluto y relativo por strike (0DTE)
+            base["gex_by_strike"] = {
+                str(int(k)): round(v, 6) for k, v in gex_0dte.items()
+            }
+            max_abs = max(abs(v) for v in gex_0dte.values())
+            if max_abs > 0:
+                base["gex_pct_by_strike"] = {
+                    str(int(k)): round(v / max_abs * 100, 1)
+                    for k, v in gex_0dte.items()
+                }
+
+        # Regime text
+        _flip_str = f" bajo {base['flip_level']:.0f}" if base.get("flip_level") is not None else ""
+        _regime_map = {
+            "LONG_GAMMA_FUERTE":  "Dealers LONG gamma (fuerte) — sesión contenida, rebotes comprados",
+            "LONG_GAMMA_SUAVE":   "Dealers LONG gamma — tendencia a mean-reversion, movimientos limitados",
+            "SHORT_GAMMA_SUAVE":  f"Dealers SHORT gamma{_flip_str} — rebotes débiles, sin cobertura",
+            "SHORT_GAMMA_FUERTE": f"Dealers SHORT gamma (fuerte){_flip_str} — caídas se aceleran",
+        }
+        base["regime_text"] = _regime_map.get(base.get("signal_gex"), "Régimen GEX no disponible")
 
         # Max Pain (cadena 0DTE)
         all_pain_strikes = set(oi_calls) | set(oi_puts)
