@@ -385,7 +385,7 @@ def notify_gex_open(snapshot: dict, auto_levels=None) -> bool:
     def _es(v: float | None) -> str:
         if v is None or es_basis is None:
             return ""
-        return f" \\(~ES {int(round(v * es_basis))}\\)"
+        return f" \\(\\~ES {int(round(v * es_basis))}\\)"
 
     spot_str = f"SPX {int(spot)}" if spot else "SPX N/A"
     es_str = f" / ES {int(round(spot * es_basis))}" if spot and es_basis else ""
