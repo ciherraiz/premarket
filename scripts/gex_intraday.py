@@ -29,12 +29,15 @@ def _now_et() -> datetime:
     return datetime.now(ET)
 
 
-def _error_snapshot(spot: float | None, reason: str) -> dict:
+def _error_snapshot(spot: float | None, reason: str,
+                    es_price: float | None = None) -> dict:
     now = _now_et()
+    es_basis = round(es_price / spot, 6) if spot and es_price else None
     return {
         "ts":                now.strftime("%Y-%m-%dT%H:%M:%S"),
         "ts_et":             now.isoformat(),
         "spot":              spot,
+        "es_basis":          es_basis,
         "net_gex_bn":        None,
         "signal_gex":        None,
         "regime_text":       "Régimen GEX no disponible",
@@ -51,16 +54,19 @@ def _error_snapshot(spot: float | None, reason: str) -> dict:
     }
 
 
-def take_gex_snapshot(client=None, spot: float | None = None) -> dict:
+def take_gex_snapshot(client=None, spot: float | None = None,
+                      es_price: float | None = None) -> dict:
     """
     Captura el perfil GEX 0DTE en el momento actual.
 
     Args:
-        client: TastyTradeClient autenticado, o None para crear uno nuevo (CLI).
-        spot:   precio de referencia (float) o None para obtenerlo del cliente.
+        client:   TastyTradeClient autenticado, o None para crear uno nuevo (CLI).
+        spot:     precio SPX cash (float) o None para obtenerlo via get_equity_quote.
+        es_price: precio /ES (float) o None. Solo se usa para calcular es_basis.
 
     Returns:
         dict con el snapshot completo. status != "OK" si hay error.
+        Incluye es_basis = round(es_price/spot, 6) para traducir niveles a /ES.
     """
     try:
         # Resolver cliente
@@ -69,9 +75,9 @@ def take_gex_snapshot(client=None, spot: float | None = None) -> dict:
                 from scripts.tastytrade_client import TastyTradeClient
                 client = TastyTradeClient()
             except Exception:
-                return _error_snapshot(spot, "MISSING_DATA")
+                return _error_snapshot(spot, "MISSING_DATA", es_price)
 
-        # Resolver spot
+        # Obtener SPX cash via TastyTrade
         if spot is None or spot <= 0:
             try:
                 quote = client.get_equity_quote("$SPX.X")
@@ -81,18 +87,20 @@ def take_gex_snapshot(client=None, spot: float | None = None) -> dict:
                 pass
 
         if not spot or spot <= 0:
-            return _error_snapshot(None, "MISSING_DATA")
+            return _error_snapshot(None, "MISSING_DATA", es_price)
+
+        es_basis = round(es_price / spot, 6) if es_price and es_price > 0 else None
 
         today = date.today()
         fecha = str(today)
 
-        # Fetch cadena 0DTE
+        # Fetch cadena 0DTE (SPXW) via TastyTrade
         try:
             contracts = client.get_option_chain(
                 "SPXW", expiry=fecha, max_strikes=60, spot=spot
             )
         except Exception:
-            return _error_snapshot(spot, "ERROR")
+            return _error_snapshot(spot, "ERROR", es_price)
 
         chain_0dte = {
             "contracts":   contracts or [],
@@ -101,7 +109,7 @@ def take_gex_snapshot(client=None, spot: float | None = None) -> dict:
             "status":      "OK" if contracts else "EMPTY_CHAIN",
         }
 
-        # Calcular GEX (misma cadena para 0dte y multi — snapshot mide presión intraday)
+        # Calcular GEX
         gex = calc_net_gex(chain_0dte, chain_0dte, spot=spot, fecha=fecha)
 
         now = _now_et()
@@ -109,6 +117,7 @@ def take_gex_snapshot(client=None, spot: float | None = None) -> dict:
             "ts":                now.strftime("%Y-%m-%dT%H:%M:%S"),
             "ts_et":             now.isoformat(),
             "spot":              spot,
+            "es_basis":          es_basis,
             "net_gex_bn":        gex.get("net_gex_bn"),
             "signal_gex":        gex.get("signal_gex"),
             "regime_text":       gex.get("regime_text", "Régimen GEX no disponible"),
@@ -125,7 +134,7 @@ def take_gex_snapshot(client=None, spot: float | None = None) -> dict:
         }
 
     except Exception:
-        return _error_snapshot(spot, "ERROR")
+        return _error_snapshot(spot, "ERROR", es_price)
 
 
 def save_snapshot(snapshot: dict, date_str: str | None = None) -> None:
@@ -203,6 +212,7 @@ def detect_shift(prev: dict | None, curr: dict) -> dict | None:
         "cn_prev":     prev.get("control_node"),
         "cn_curr":     curr.get("control_node"),
         "spot":        curr.get("spot"),
+        "es_basis":    curr.get("es_basis"),
         "ts":          curr.get("ts", ""),
         "regime_text": curr.get("regime_text", ""),
     }
