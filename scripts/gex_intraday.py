@@ -71,12 +71,12 @@ def take_gex_snapshot(client=None, spot: float | None = None) -> dict:
             except Exception:
                 return _error_snapshot(spot, "MISSING_DATA")
 
-        # Resolver spot
+        # Resolver spot — usar /ES mark como proxy del SPX cash
         if spot is None or spot <= 0:
             try:
-                quote = client.get_equity_quote("$SPX.X")
+                quote = client.get_future_quote("/ES")
                 if quote.get("status") == "OK":
-                    spot = quote.get("last") or quote.get("mark")
+                    spot = quote.get("mark") or quote.get("last")
             except Exception:
                 pass
 
