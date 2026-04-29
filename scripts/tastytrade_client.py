@@ -124,11 +124,11 @@ class TastyTradeClient:
         """
         Devuelve el precio actual de un equity o índice via DXLink.
 
-        Para índices como '$SPX.X', bid/ask representan el nivel actual del índice.
+        Para índices como 'SPX', bid/ask representan el nivel actual del índice.
         El mark (bid+ask)/2 es el precio principal.
 
         Args:
-            symbol: símbolo DXLink del instrumento, ej. '$SPX.X'
+            symbol: símbolo DXLink del instrumento, ej. 'SPX'
 
         Returns:
             {
