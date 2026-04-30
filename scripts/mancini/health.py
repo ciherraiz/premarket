@@ -514,12 +514,17 @@ def start_day(skip_scan: bool = False, dry_run: bool = False) -> bool:
                 _auto = _calc_auto()
                 if _auto:
                     print(f"  Auto-levels calculados: {len(_auto.levels)} niveles")
-                    if not already_notified:
+                    # Re-leer del disco: otra instancia paralela puede haber notificado ya
+                    _fresh = load_auto_levels(AUTO_LEVELS_PATH)
+                    _already_sent = _fresh is not None and _fresh.notified_at == today
+                    if not already_notified and not _already_sent:
                         try:
                             notifier.notify_auto_levels(_auto)
                             mark_auto_levels_notified(AUTO_LEVELS_PATH)
                         except Exception as _ne:
                             print(f"  ⚠️  notify_auto_levels: {_ne}")
+                    elif _already_sent:
+                        print("  Notificación ya enviada hoy (otra instancia). Sin reenviar.")
                 else:
                     print("  ⚠️  Auto-levels: datos insuficientes (data.json/indicators.json no disponibles)")
         else:
