@@ -421,7 +421,7 @@ def notify_gex_open(snapshot: dict, auto_levels=None) -> bool:
     if spot:
         entries.append((spot, f"▶ {_esc(spot_str)}{_esc(es_str)}"))
 
-    if auto_levels is not None:
+    if auto_levels is not None and spot is not None:
         group_icon = {
             "daily":     "📊",
             "weekly":    "📅",
@@ -429,7 +429,39 @@ def notify_gex_open(snapshot: dict, auto_levels=None) -> bool:
             "round":     "⬜",
             "overnight": "🌙",
         }
+
+        # Count GEX key levels already collected per side (to cap total)
+        gex_above = sum(
+            1 for k in ("call_wall", "flip_level", "control_node", "put_wall")
+            if snapshot.get(k) is not None and float(snapshot[k]) > spot
+        )
+        gex_below = sum(
+            1 for k in ("call_wall", "flip_level", "control_node", "put_wall")
+            if snapshot.get(k) is not None and float(snapshot[k]) < spot
+        )
+        take_above = max(0, 4 - gex_above)
+        take_below = max(0, 4 - gex_below)
+
+        # Non-round levels within ±75 pts
+        tech = [l for l in auto_levels.levels
+                if l.group != "round" and abs(l.value - spot) <= 75]
+        tech_vals = {l.value for l in tech} | {
+            float(snapshot[k]) for k in ("call_wall", "flip_level", "control_node", "put_wall")
+            if snapshot.get(k) is not None
+        }
+
+        # Round numbers only if within ±5 pts of any other level
         for lvl in auto_levels.levels:
+            if lvl.group != "round" or abs(lvl.value - spot) > 75:
+                continue
+            if any(abs(lvl.value - v) <= 5 for v in tech_vals):
+                tech.append(lvl)
+
+        # Closest levels per side up to the cap
+        above = sorted([l for l in tech if l.value > spot], key=lambda l: l.value)[:take_above]
+        below = sorted([l for l in tech if l.value < spot], key=lambda l: -l.value)[:take_below]
+
+        for lvl in above + below:
             icon = group_icon.get(lvl.group, "⬜")
             entries.append((float(lvl.value), f"{icon} {_esc(lvl.label)}"))
 
