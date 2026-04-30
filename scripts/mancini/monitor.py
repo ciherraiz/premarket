@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -127,8 +127,7 @@ def _should_use_stale_plan(plan: DailyPlan | None, price: float | None,
     if plan is None or price is None:
         return False
 
-    from datetime import date
-    today = date.today()
+    today = _now_et().date()
     try:
         plan_date = date.fromisoformat(plan.fecha)
     except ValueError:
