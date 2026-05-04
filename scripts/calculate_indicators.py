@@ -1,9 +1,10 @@
 # ---------------------------------------------------------------------------
 # Constantes configurables Net GEX
 # ---------------------------------------------------------------------------
-GEX_UMBRAL_FUERTE   = 5.0    # billions — long gamma fuerte (calibrado con datos reales)
-GEX_UMBRAL_NEGATIVO  = 5.0   # billions — short gamma fuerte (valor absoluto)
-GEX_MAX_STRIKES      = 60    # strikes máximos por vencimiento (±30 ATM)
+GEX_UMBRAL_FUERTE      = 5.0   # billions — long gamma fuerte (calibrado con datos reales)
+GEX_UMBRAL_NEGATIVO    = 5.0   # billions — short gamma fuerte (valor absoluto)
+GEX_MAX_STRIKES        = 60    # strikes máximos por vencimiento (±30 ATM)
+GEX_WALL_PROXIMITY_PTS = 20    # puntos SPX para considerar "cerca" de una wall (IND-08)
 
 
 def calc_vix_vxv_slope(vix_current: dict) -> dict:
@@ -394,15 +395,18 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
         "flip_level":        None,
         "score_flip":        0,
         "signal_flip":       "SIN_FLIP",
-        "put_wall":          None,
-        "call_wall":         None,
-        "max_pain":          None,
-        "control_node":      None,
-        "chop_zone_low":     None,
-        "chop_zone_high":    None,
-        "gex_by_strike":     {},
-        "gex_pct_by_strike": {},
-        "regime_text":       "Régimen GEX no disponible",
+        "put_wall":               None,
+        "call_wall":              None,
+        "expected_range_pts":     None,
+        "score_wall_proximity":   0,
+        "signal_wall_proximity":  "SIN_WALLS",
+        "max_pain":               None,
+        "control_node":           None,
+        "chop_zone_low":          None,
+        "chop_zone_high":         None,
+        "gex_by_strike":          {},
+        "gex_pct_by_strike":      {},
+        "regime_text":            "Régimen GEX no disponible",
         "spot":              spot,
         "n_strikes":         0,
         "n_expiries":        0,
@@ -500,6 +504,23 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
             base["put_wall"]  = min(gex_0dte, key=gex_0dte.get)
             base["call_wall"] = max(gex_0dte, key=gex_0dte.get)
 
+            # Expected session range
+            base["expected_range_pts"] = round(base["call_wall"] - base["put_wall"], 1)
+
+            # IND-08 Wall Proximity — sesgo según distancia spot a walls principales
+            if spot:
+                dist_call = base["call_wall"] - spot
+                dist_put  = spot - base["put_wall"]
+                if dist_call <= GEX_WALL_PROXIMITY_PTS:
+                    base["score_wall_proximity"]  = -2
+                    base["signal_wall_proximity"] = "CERCA_CALL_WALL"
+                elif dist_put <= GEX_WALL_PROXIMITY_PTS:
+                    base["score_wall_proximity"]  = 2
+                    base["signal_wall_proximity"] = "CERCA_PUT_WALL"
+                else:
+                    base["score_wall_proximity"]  = 0
+                    base["signal_wall_proximity"] = "ENTRE_WALLS"
+
             # Flip Level (IND-04) + Chop Zone
             # Cruce por strike individual: primer strike positivo tras una secuencia negativa.
             # Equivale a la frontera visual entre barras negativas y positivas en el perfil GEX.
@@ -572,9 +593,10 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
             base["max_pain"] = max_pain_strike
 
     except Exception:
-        base["status"]     = "ERROR"
-        base["score_gex"]  = 0
-        base["score_flip"] = 0
+        base["status"]              = "ERROR"
+        base["score_gex"]           = 0
+        base["score_flip"]          = 0
+        base["score_wall_proximity"] = 0
 
     return base
 
@@ -598,7 +620,8 @@ if __name__ == "__main__":
     )
 
     d_score = (slope["score"] + ratio["score"] + gap["score"]
-               + net_gex["score_gex"] + net_gex["score_flip"])
+               + net_gex["score_gex"] + net_gex["score_flip"]
+               + net_gex["score_wall_proximity"])
     v_score = ivr["score"] + atr_ratio["score"]
 
     indicators = {
@@ -619,6 +642,7 @@ if __name__ == "__main__":
           f"gap={gap['signal']}({gap['score']})  "
           f"gex={net_gex['signal_gex']}({net_gex['score_gex']})  "
           f"flip={net_gex['signal_flip']}({net_gex['score_flip']})  "
+          f"wall={net_gex['signal_wall_proximity']}({net_gex['score_wall_proximity']})  "
           f"ivr={ivr['signal']}({ivr['score']})  "
           f"atr={atr_ratio['signal']}({atr_ratio['score']})  "
           f"D={d_score}  V={v_score}")
