@@ -451,15 +451,26 @@ def start_day(skip_scan: bool = False, dry_run: bool = False) -> bool:
     if orphans:
         print(f"  Procesos huérfanos eliminados: {orphans}")
 
-    # 2. Idempotencia: si el monitor oficial ya corre, no lanzar un segundo
+    # 2. Idempotencia: si el monitor oficial ya corre y está sano, no tocar nada.
+    #    Si está DEGRADADO (quote muerta, plan stale sin datos…), pararlo y relanzar
+    #    limpiamente para que reconecte feeds y reescanee tweets.
     if is_monitor_running():
         health = check_health()
         if health.overall_ok:
             print("Monitor ya está corriendo y sano. Sin cambios.")
-        else:
-            print("Monitor corriendo pero con problemas (quote lenta o plan pendiente) — sin relanzar.")
+            health.print_summary()
+            return True
+        print("Monitor corriendo pero DEGRADADO — reiniciando para recuperar estado limpio.")
         health.print_summary()
-        return health.monitor_running
+        pid = read_pid()
+        try:
+            import signal as _signal
+            os.kill(pid, _signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
+        time.sleep(3)
+        clear_pid()
+        clear_stop_flag()
 
     # 3. Limpiar estado del día anterior
     print("  Limpiando estado anterior...")
