@@ -97,6 +97,20 @@ def print_scorecard(indicators: dict, phase: str = "premarket") -> None:
     flip_signal = net_gex.get("signal_flip", "N/A")
     print(f"  {'Flip Level':<20} {flip_val:<26} {_sign(flip_score):<6} {flip_signal}")
 
+    # Wall Proximity (IND-08)
+    wall_prox_status = net_gex.get("status", "ERROR")
+    call_wall = net_gex.get("call_wall")
+    put_wall  = net_gex.get("put_wall")
+    exp_range = net_gex.get("expected_range_pts")
+    if wall_prox_status == "OK" and call_wall is not None and put_wall is not None:
+        spot_val = net_gex.get("spot") or 0
+        wall_val = f"CW={int(call_wall)}  PW={int(put_wall)}  Rng={int(exp_range) if exp_range else '?'}"
+        wall_score  = net_gex.get("score_wall_proximity", 0)
+        wall_signal = net_gex.get("signal_wall_proximity", "N/A")
+        print(f"  {'Wall Proximity':<20} {wall_val:<26} {_sign(wall_score):<6} {wall_signal}")
+    elif wall_prox_status == "OK":
+        print(f"  {'Wall Proximity':<20} {'SIN_WALLS':<26} {'0':<6} SIN_WALLS")
+
     # Control Node (solo short gamma)
     control_node = net_gex.get("control_node")
     if control_node is not None and gex_status == "OK":
@@ -113,6 +127,26 @@ def print_scorecard(indicators: dict, phase: str = "premarket") -> None:
     regime_text = net_gex.get("regime_text", "")
     if regime_text and regime_text != "Régimen GEX no disponible" and gex_status == "OK":
         print(f"\n  {regime_text}")
+
+    # Estructura GEX → tipo de estrategia sugerida
+    _gex_strategy_map = {
+        "LONG_GAMMA_FUERTE":  "Fade / Iron Condor (rango contenido)",
+        "LONG_GAMMA_SUAVE":   "Fade / Iron Condor (rango moderado)",
+        "SHORT_GAMMA_SUAVE":  "Direccional / Spread débito (expansión leve)",
+        "SHORT_GAMMA_FUERTE": "Direccional / Spread débito (expansión agresiva)",
+    }
+    gex_strategy = _gex_strategy_map.get(net_gex.get("signal_gex", ""))
+    if gex_strategy and gex_status == "OK":
+        print(f"  Estructura GEX: {gex_strategy}")
+
+    # Objetivo flip → wall
+    flip_level = net_gex.get("flip_level")
+    flip_signal = net_gex.get("signal_flip", "")
+    if flip_level is not None and call_wall is not None and put_wall is not None and gex_status == "OK":
+        if flip_signal == "SOBRE_FLIP":
+            print(f"  Objetivo: sobre flip={int(flip_level)} → CW={int(call_wall)}")
+        elif flip_signal == "BAJO_FLIP":
+            print(f"  Objetivo: bajo flip={int(flip_level)} → PW={int(put_wall)}")
 
     print(line)
     print(f"  D-Score (direccional):  {_sign(d_score)}")
@@ -228,11 +262,44 @@ def print_combined_scorecard(
             val = f"[{net_gex.get('status','ERROR')}]"
         print(f"  {'Flip Level':<20} {val:<26} {_sign(net_gex.get('score_flip',0)):<6} {net_gex.get('signal_flip','N/A')}")
 
+    def _wall_proximity_row():
+        cw  = net_gex.get("call_wall")
+        pw  = net_gex.get("put_wall")
+        rng = net_gex.get("expected_range_pts")
+        if net_gex.get("status") == "OK" and cw is not None and pw is not None:
+            val = f"CW={int(cw)}  PW={int(pw)}  Rng={int(rng) if rng else '?'}"
+            print(f"  {'Wall Proximity':<20} {val:<26} {_sign(net_gex.get('score_wall_proximity',0)):<6} {net_gex.get('signal_wall_proximity','N/A')}")
+        elif net_gex.get("status") == "OK":
+            print(f"  {'Wall Proximity':<20} {'SIN_WALLS':<26} {'0':<6} SIN_WALLS")
+
     _slope_row()
     _ratio_row()
     _gap_row()
     _gex_row()
     _flip_row()
+    _wall_proximity_row()
+
+    # Estrategia GEX + objetivo flip→wall
+    _gex_strategy_map = {
+        "LONG_GAMMA_FUERTE":  "Fade / Iron Condor (rango contenido)",
+        "LONG_GAMMA_SUAVE":   "Fade / Iron Condor (rango moderado)",
+        "SHORT_GAMMA_SUAVE":  "Direccional / Spread débito (expansión leve)",
+        "SHORT_GAMMA_FUERTE": "Direccional / Spread débito (expansión agresiva)",
+    }
+    if net_gex.get("status") == "OK":
+        gex_strat = _gex_strategy_map.get(net_gex.get("signal_gex", ""))
+        if gex_strat:
+            print(f"  Estructura GEX: {gex_strat}")
+        cw = net_gex.get("call_wall")
+        pw = net_gex.get("put_wall")
+        fl = net_gex.get("flip_level")
+        fs = net_gex.get("signal_flip", "")
+        if fl is not None and cw is not None and pw is not None:
+            if fs == "SOBRE_FLIP":
+                print(f"  Objetivo: sobre flip={int(fl)} → CW={int(cw)}")
+            elif fs == "BAJO_FLIP":
+                print(f"  Objetivo: bajo flip={int(fl)} → PW={int(pw)}")
+
     print(line)
     print(f"  D-Score premarket:  {_sign(d_pre)}")
     print()
