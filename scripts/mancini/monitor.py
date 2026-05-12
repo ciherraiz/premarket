@@ -324,11 +324,11 @@ class ManciniMonitor:
         from scripts.mancini.tweet_parser import parse_tweets_to_plan
         from scripts.mancini.logger import append_scan_result
 
-        today_et = _now_et().strftime("%Y-%m-%d")
         _log("Buscando plan de hoy en tweets de Mancini...")
 
         while True:
             now = _now_et()
+            today_et = now.strftime("%Y-%m-%d")
             if now.hour >= self.session_end:
                 _log("Fin de sesión sin plan — cerrando monitor")
                 return False
