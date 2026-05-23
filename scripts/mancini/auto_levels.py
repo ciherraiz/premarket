@@ -323,5 +323,9 @@ def calculate_and_save(
         spx_spot=float(spx_spot) if spx_spot else None,
         overnight=overnight,
     )
+    # Preservar notified_at si ya se envió hoy (evita race condition entre instancias paralelas)
+    existing = load_auto_levels(output_path)
+    if existing and existing.notified_at == str(date.today()):
+        auto.notified_at = existing.notified_at
     save_auto_levels(auto, output_path)
     return auto
