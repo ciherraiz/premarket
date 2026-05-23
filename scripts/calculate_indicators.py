@@ -1,3 +1,5 @@
+import math
+
 # ---------------------------------------------------------------------------
 # Constantes configurables Net GEX
 # ---------------------------------------------------------------------------
@@ -5,6 +7,52 @@ GEX_UMBRAL_FUERTE      = 5.0   # billions — long gamma fuerte (calibrado con d
 GEX_UMBRAL_NEGATIVO    = 5.0   # billions — short gamma fuerte (valor absoluto)
 GEX_MAX_STRIKES        = 60    # strikes máximos por vencimiento (±30 ATM)
 GEX_WALL_PROXIMITY_PTS = 20    # puntos SPX para considerar "cerca" de una wall (IND-08)
+
+# ---------------------------------------------------------------------------
+# Constantes configurables Charm
+# ---------------------------------------------------------------------------
+CHARM_RF               = 0.05  # tipo libre de riesgo anual para cálculo charm
+
+
+# ---------------------------------------------------------------------------
+# Utilidad: cálculo analítico de charm (B-S)
+# ---------------------------------------------------------------------------
+
+def _calc_charm(
+    spot: float,
+    strike: float,
+    iv: float,
+    dte: int,
+    option_type: str,
+    r: float = CHARM_RF,
+) -> float | None:
+    """
+    Charm: tasa de cambio del delta por día calendario que pasa.
+
+    Retorna delta/día desde la perspectiva del dealer que gestiona el hedge:
+      Positivo → el dealer compra S a medida que pasa el tiempo (presión alcista)
+      Negativo → el dealer vende S a medida que pasa el tiempo (presión bajista)
+
+    Fórmula Black-Scholes estándar. Para 0DTE usa T = 0.5/365 (media sesión)
+    como floor para evitar singularidad.
+
+    Returns None si algún input no es válido.
+    """
+    if iv is None or iv <= 0 or spot <= 0 or strike <= 0:
+        return None
+    T = max(dte / 365.0, 0.5 / 365.0)
+    sqrt_T = math.sqrt(T)
+    try:
+        d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * T) / (iv * sqrt_T)
+        d2 = d1 - iv * sqrt_T
+        n_prime_d1 = math.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi)
+        # charm en delta/año; escalamos a delta/día al final
+        raw = n_prime_d1 * (2.0 * r * T - d2 * iv * sqrt_T) / (2.0 * iv * T * sqrt_T)
+        charm_per_day = raw / 365.0
+        # Puts tienen charm opuesto a calls (misma magnitud, distinto signo de hedging)
+        return charm_per_day if option_type == "C" else -charm_per_day
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return None
 
 
 def calc_vix_vxv_slope(vix_current: dict) -> dict:

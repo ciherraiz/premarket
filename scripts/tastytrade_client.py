@@ -293,6 +293,10 @@ class TastyTradeClient:
                 g = float(greek.gamma)
                 gamma = g if g > 0 else None
 
+            delta = None
+            if greek is not None and greek.delta is not None:
+                delta = float(greek.delta)
+
             iv = None
             if greek is not None and greek.volatility is not None:
                 v = float(greek.volatility)
@@ -306,8 +310,10 @@ class TastyTradeClient:
                 "strike":        strike_price,
                 "option_type":   option_type,
                 "expiry":        expiry_str,
+                "dte":           (date.fromisoformat(expiry_str) - date.today()).days,
                 "open_interest": oi,
                 "gamma":         gamma,
+                "delta":         delta,
                 "iv":            iv,
             })
 
