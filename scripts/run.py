@@ -20,9 +20,12 @@ from fetch_market_data import (
 )
 from calculate_indicators import (
     calc_atr_ratio,
+    calc_charm_exposure,
+    calc_delta_exposure,
     calc_ivr,
     calc_net_gex,
     calc_overnight_gap,
+    calc_pinning_zone,
     calc_vix9d_vix_ratio,
     calc_vix_vxv_slope,
 )
@@ -96,29 +99,38 @@ def run_premarket_phase(out: Path) -> dict:
     gap       = calc_overnight_gap(data.get("es_prev", {}), data.get("es", {}))
     ivr       = calc_ivr(data, data.get("vix_history", {}))
     atr_ratio = calc_atr_ratio(data.get("spx_ohlcv", {}))
-    net_gex   = calc_net_gex(
+    spx_spot_val = data.get("spx_spot")
+    fecha_val    = data.get("fecha")
+
+    net_gex = calc_net_gex(
         chain_0dte=data.get("option_chain_0dte", {}),
         chain_30dte=data.get("option_chain_30dte", {}),
         chain_7dte=data.get("option_chain_7dte"),
-        spot=data.get("spx_spot"),
-        fecha=data.get("fecha"),
+        spot=spx_spot_val,
+        fecha=fecha_val,
     )
+    charm = calc_charm_exposure(data.get("option_chain_0dte", {}), spx_spot_val, fecha_val)
+    dex   = calc_delta_exposure(data.get("option_chain_0dte", {}), spx_spot_val, fecha_val)
+    pin   = calc_pinning_zone(net_gex, charm, spx_spot_val)
 
     d_score = (slope["score"] + ratio["score"] + gap["score"]
                + net_gex["score_gex"] + net_gex["score_flip"])
     v_score = ivr["score"] + atr_ratio["score"]
 
     premarket_indicators = {
-        "fecha":           data.get("fecha"),
+        "fecha":           fecha_val,
         "vix_vxv_slope":   slope,
         "vix9d_vix_ratio": ratio,
         "overnight_gap":   gap,
         "ivr":             ivr,
         "atr_ratio":       atr_ratio,
         "net_gex":         net_gex,
+        "charm_exposure":  charm,
+        "delta_exposure":  dex,
+        "pinning_zone":    pin,
         "d_score":         d_score,
         "v_score":         v_score,
-        "spx_prev_close":  spx_spot,   # cierre anterior — necesario para IND-OPEN-05
+        "spx_prev_close":  spx_spot_val,   # cierre anterior — necesario para IND-OPEN-05
     }
 
     # Guardar indicators.json con namespace
