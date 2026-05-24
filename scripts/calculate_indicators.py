@@ -1,3 +1,5 @@
+import math
+
 # ---------------------------------------------------------------------------
 # Constantes configurables Net GEX
 # ---------------------------------------------------------------------------
@@ -5,6 +7,52 @@ GEX_UMBRAL_FUERTE      = 5.0   # billions — long gamma fuerte (calibrado con d
 GEX_UMBRAL_NEGATIVO    = 5.0   # billions — short gamma fuerte (valor absoluto)
 GEX_MAX_STRIKES        = 60    # strikes máximos por vencimiento (±30 ATM)
 GEX_WALL_PROXIMITY_PTS = 20    # puntos SPX para considerar "cerca" de una wall (IND-08)
+
+# ---------------------------------------------------------------------------
+# Constantes configurables Charm
+# ---------------------------------------------------------------------------
+CHARM_RF               = 0.05  # tipo libre de riesgo anual para cálculo charm
+
+
+# ---------------------------------------------------------------------------
+# Utilidad: cálculo analítico de charm (B-S)
+# ---------------------------------------------------------------------------
+
+def _calc_charm(
+    spot: float,
+    strike: float,
+    iv: float,
+    dte: int,
+    option_type: str,
+    r: float = CHARM_RF,
+) -> float | None:
+    """
+    Charm: tasa de cambio del delta por día calendario que pasa.
+
+    Retorna delta/día desde la perspectiva del dealer que gestiona el hedge:
+      Positivo → el dealer compra S a medida que pasa el tiempo (presión alcista)
+      Negativo → el dealer vende S a medida que pasa el tiempo (presión bajista)
+
+    Fórmula Black-Scholes estándar. Para 0DTE usa T = 0.5/365 (media sesión)
+    como floor para evitar singularidad.
+
+    Returns None si algún input no es válido.
+    """
+    if iv is None or iv <= 0 or spot <= 0 or strike <= 0:
+        return None
+    T = max(dte / 365.0, 0.5 / 365.0)
+    sqrt_T = math.sqrt(T)
+    try:
+        d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * T) / (iv * sqrt_T)
+        d2 = d1 - iv * sqrt_T
+        n_prime_d1 = math.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi)
+        # charm en delta/año; escalamos a delta/día al final
+        raw = n_prime_d1 * (2.0 * r * T - d2 * iv * sqrt_T) / (2.0 * iv * T * sqrt_T)
+        charm_per_day = raw / 365.0
+        # Puts tienen charm opuesto a calls (misma magnitud, distinto signo de hedging)
+        return charm_per_day if option_type == "C" else -charm_per_day
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return None
 
 
 def calc_vix_vxv_slope(vix_current: dict) -> dict:
@@ -378,18 +426,35 @@ def calc_atr_ratio(spx_ohlcv_data: dict) -> dict:
     return base
 
 
-def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -> dict:
+def calc_net_gex(
+    chain_0dte:  dict,
+    chain_30dte: dict,
+    spot:        float,
+    fecha:       str,
+    chain_7dte:  dict | None = None,
+    # Compatibilidad retroactiva — chain_multi es alias de chain_30dte
+    chain_multi: dict | None = None,
+) -> dict:
     """
     Calcula Net GEX, flip level, put/call wall y max pain.
 
     Args:
-        chain_0dte:  fetch_option_chain(days_ahead=0) — niveles intraday (flip, walls, max_pain)
-        chain_multi: fetch_option_chain(days_ahead=5) — régimen GEX total (net_gex_bn)
+        chain_0dte:  fetch_option_chain(max_dte=0) — niveles intraday (flip, walls, max_pain)
+        chain_30dte: fetch_option_chain(max_dte=30) — régimen GEX total (net_gex_bn)
         spot:        precio del SPX (float o None)
         fecha:       fecha del análisis "YYYY-MM-DD"
+        chain_7dte:  fetch_option_chain(max_dte=7) — bucket semanal (opcional)
+        chain_multi: alias retroactivo de chain_30dte (deprecated)
     """
+    # Compatibilidad retroactiva
+    if chain_30dte is None and chain_multi is not None:
+        chain_30dte = chain_multi
+    if chain_30dte is None:
+        chain_30dte = {}
+
     base = {
         "net_gex_bn":        None,
+        "net_gex_by_dte":    {"0dte": None, "7dte": None, "30dte": None},
         "score_gex":         0,
         "signal_gex":        None,
         "flip_level":        None,
@@ -415,9 +480,9 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
     }
 
     try:
-        # Validar cadena multi (fuente del régimen GEX)
-        multi_status    = chain_multi.get("status", "ERROR")
-        multi_contracts = chain_multi.get("contracts", [])
+        # Validar cadena 30dte (fuente del régimen GEX)
+        multi_status    = chain_30dte.get("status", "ERROR")
+        multi_contracts = chain_30dte.get("contracts", [])
 
         if multi_status in ("EMPTY_CHAIN", "MISSING_DATA") or not multi_contracts:
             base["status"] = multi_status if multi_status != "OK" else "EMPTY_CHAIN"
@@ -431,7 +496,7 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
             base["status"] = "MISSING_DATA"
             return base
 
-        # --- Net GEX total (cadena multi-día) ---
+        # --- Net GEX total (cadena 30dte) ---
         gex_all       = {}
         n_with_gamma  = 0
         expiries_seen = set()
@@ -458,6 +523,32 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
         net_gex_bn = sum(gex_all.values())
         base["net_gex_bn"] = round(net_gex_bn, 4)
         base["n_expiries"] = len(expiries_seen)
+
+        # --- Net GEX por bucket DTE ---
+        def _sum_gex_bucket(contracts: list) -> float | None:
+            """Suma el GEX neto de una lista de contratos."""
+            total = 0.0
+            found = False
+            for c in contracts:
+                g = c.get("gamma")
+                oi = int(c.get("open_interest") or 0)
+                if not g or g <= 0:
+                    continue
+                sign = 1 if c["option_type"] == "C" else -1
+                total += g * oi * spot * spot / 1_000_000_000 * sign
+                found = True
+            return round(total, 4) if found else None
+
+        base["net_gex_by_dte"]["30dte"] = round(net_gex_bn, 4)
+
+        _c0 = chain_0dte.get("contracts", [])
+        if _c0:
+            base["net_gex_by_dte"]["0dte"] = _sum_gex_bucket(_c0)
+
+        if chain_7dte:
+            _c7 = chain_7dte.get("contracts", [])
+            if _c7:
+                base["net_gex_by_dte"]["7dte"] = _sum_gex_bucket(_c7)
 
         # Score GEX (IND-03) — umbrales asimétricos calibrados al OI del SPX
         if net_gex_bn > GEX_UMBRAL_FUERTE:
@@ -601,6 +692,400 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
     return base
 
 
+# ---------------------------------------------------------------------------
+# Constantes Fase 3
+# ---------------------------------------------------------------------------
+CHARM_SIGNAL_THRESHOLD = 50_000   # deltas/hora — umbral EXPANSIVO/SUPRESIVO
+DEX_SCALE = 1_000_000_000         # escala a billions igual que GEX
+CHARM_PIN_ATM_RANGE = 50          # ±50 pts del spot para buscar pin zone
+
+# Horas de sesión ET para proyección intraday (09:30 – 15:30 cada 30 min)
+_SESSION_HOURS = [
+    "09:30", "10:00", "10:30", "11:00", "11:30",
+    "12:00", "12:30", "13:00", "13:30", "14:00",
+    "14:30", "15:00", "15:30",
+]
+# Tiempo restante hasta 16:00 ET para cada hora (en años)
+_HOURS_TO_CLOSE = {
+    "09:30": 6.5, "10:00": 6.0, "10:30": 5.5, "11:00": 5.0, "11:30": 4.5,
+    "12:00": 4.0, "12:30": 3.5, "13:00": 3.0, "13:30": 2.5, "14:00": 2.0,
+    "14:30": 1.5, "15:00": 1.0, "15:30": 0.5,
+}
+_TRADING_HOURS_PER_YEAR = 252 * 6.5   # horas de trading por año
+
+
+def calc_charm_exposure(chain_0dte: dict, spot: float, fecha: str) -> dict:
+    """
+    Calcula la exposición charm por strike y el flujo charm total esperado
+    durante la sesión del día.
+
+    El charm mide cuánto delta pierden/ganan los contratos por el paso del
+    tiempo sin que el precio se mueva. Multiplicado por el OI, da el flujo
+    de hedging mecánico de los dealers.
+
+    Args:
+        chain_0dte: cadena de opciones 0DTE con delta e iv por contrato
+        spot:       precio spot del SPX
+        fecha:      YYYY-MM-DD
+
+    Returns:
+        {
+            "charm_by_strike":     dict[str, float],
+            "charm_total":         float | None,
+            "charm_signal":        "EXPANSIVO" | "SUPRESIVO" | "NEUTRO",
+            "charm_narrative":     str,
+            "charm_pin_zone":      float | None,
+            "charm_pin_zone_conf": "ALTA" | "MEDIA" | "BAJA",
+            "charm_intraday":      list[dict],
+            "status":              str,
+            "fecha":               str,
+        }
+    """
+    base: dict = {
+        "charm_by_strike":     {},
+        "charm_total":         None,
+        "charm_signal":        "NEUTRO",
+        "charm_narrative":     "Charm balanceado — sin sesgo direccional por tiempo",
+        "charm_pin_zone":      None,
+        "charm_pin_zone_conf": "BAJA",
+        "charm_intraday":      [],
+        "status":              "OK",
+        "fecha":               fecha,
+    }
+
+    if not spot or spot <= 0:
+        base["status"] = "MISSING_DATA"
+        return base
+
+    contracts = chain_0dte.get("contracts", [])
+    if not contracts:
+        base["status"] = chain_0dte.get("status", "EMPTY_CHAIN")
+        return base
+
+    try:
+        # --- Charm exposure por strike (momento actual: 0DTE = DTE 0) ---
+        # _calc_charm recibe dte=0 → usa T = 0.5/365 internamente como floor
+
+        charm_by_strike: dict[float, float] = {}
+
+        for c in contracts:
+            strike = float(c["strike"])
+            otype  = c["option_type"]
+            oi     = int(c.get("open_interest") or 0)
+            iv     = c.get("iv")
+            dte_c  = int(c.get("dte") or 0)
+
+            charm_val = _calc_charm(spot, strike, iv, dte_c, otype)
+            if charm_val is None:
+                continue
+
+            # charm_exposure: deltas que los dealers deben comprar/vender por día por decay
+            # (sign ya incluido por _calc_charm: calls→positivo, puts→negativo)
+            exposure = charm_val * oi * 100
+            charm_by_strike[strike] = charm_by_strike.get(strike, 0.0) + exposure
+
+        if not charm_by_strike:
+            base["status"] = "NO_IV_DATA"
+            return base
+
+        charm_total = sum(charm_by_strike.values())
+        base["charm_by_strike"] = {
+            str(int(k)): round(v, 2) for k, v in charm_by_strike.items()
+        }
+        base["charm_total"] = round(charm_total, 2)
+
+        # --- Signal y narrativa ---
+        if charm_total > CHARM_SIGNAL_THRESHOLD:
+            base["charm_signal"] = "EXPANSIVO"
+            base["charm_narrative"] = (
+                f"Dealers comprando ~{charm_total / 1000:.0f}K delta/hora "
+                "por decay — soporte mecánico intraday"
+            )
+        elif charm_total < -CHARM_SIGNAL_THRESHOLD:
+            base["charm_signal"] = "SUPRESIVO"
+            base["charm_narrative"] = (
+                f"Dealers vendiendo ~{abs(charm_total) / 1000:.0f}K delta/hora "
+                "por decay — presión bajista mecánica"
+            )
+        # else: NEUTRO ya está en base
+
+        # --- Charm Pin Zone ---
+        atm_strikes = {
+            k: v for k, v in charm_by_strike.items()
+            if abs(k - spot) <= CHARM_PIN_ATM_RANGE
+        }
+        if atm_strikes:
+            pin_strike = max(atm_strikes, key=lambda k: abs(atm_strikes[k]))
+            base["charm_pin_zone"] = pin_strike
+            if charm_total != 0:
+                ratio = abs(charm_by_strike[pin_strike]) / abs(charm_total)
+                base["charm_pin_zone_conf"] = (
+                    "ALTA"  if ratio > 0.4 else
+                    "MEDIA" if ratio > 0.2 else
+                    "BAJA"
+                )
+
+        # --- Proyección intraday ---
+        # Para cada hora calculamos un DTE fraccional: horas restantes / 6.5 días de trading
+        intraday = []
+        for hora, hours_left in _HOURS_TO_CLOSE.items():
+            # Convertir horas restantes a "días equivalentes de trading" para _calc_charm
+            # _calc_charm usa max(dte/365, 0.5/365) internamente
+            dte_frac = hours_left / 6.5   # fracción de un día de trading
+            charm_h = 0.0
+            has_data = False
+            for c in contracts:
+                strike = float(c["strike"])
+                otype  = c["option_type"]
+                oi     = int(c.get("open_interest") or 0)
+                iv     = c.get("iv")
+                # Pasamos dte_frac como "dte" — _calc_charm lo divide por 365
+                ch = _calc_charm(spot, strike, iv, dte_frac, otype)
+                if ch is None:
+                    continue
+                charm_h += ch * oi * 100
+                has_data = True
+            if has_data:
+                if charm_h > CHARM_SIGNAL_THRESHOLD:
+                    sig_h = "EXPANSIVO"
+                elif charm_h < -CHARM_SIGNAL_THRESHOLD:
+                    sig_h = "SUPRESIVO"
+                else:
+                    sig_h = "NEUTRO"
+                intraday.append({
+                    "hora":        hora,
+                    "charm_delta": round(charm_h, 2),
+                    "signal":      sig_h,
+                })
+        base["charm_intraday"] = intraday
+
+    except Exception:
+        base["status"] = "ERROR"
+
+    return base
+
+
+def calc_delta_exposure(chain_0dte: dict, spot: float, fecha: str) -> dict:
+    """
+    Calcula el Delta Exposure (DEX) por strike.
+
+    El DEX agrega el delta neto por strike, mostrando dónde los dealers
+    están largos o cortos en delta. Complementa el GEX: el GEX dice cuánto
+    reajustan los dealers cuando el precio se mueve; el DEX dice en qué
+    dirección están posicionados ahora mismo.
+
+    Args:
+        chain_0dte: cadena 0DTE con campo delta por contrato
+        spot:       precio spot del SPX
+        fecha:      YYYY-MM-DD
+
+    Returns:
+        {
+            "dex_by_strike":     dict[str, float],  # DEX por strike (billions)
+            "dex_cumulative":    dict[str, float],  # DEX acumulado de menor a mayor strike
+            "dex_total":         float | None,
+            "dex_flip":          float | None,      # strike donde DEX cum cruza cero
+            "dex_positive_wall": float | None,      # strike con DEX más positivo
+            "dex_negative_wall": float | None,      # strike con DEX más negativo
+            "dex_signal":        str | None,
+            "dex_narrative":     str,
+            "status":            str,
+            "fecha":             str,
+        }
+    """
+    base: dict = {
+        "dex_by_strike":     {},
+        "dex_cumulative":    {},
+        "dex_total":         None,
+        "dex_flip":          None,
+        "dex_positive_wall": None,
+        "dex_negative_wall": None,
+        "dex_signal":        None,
+        "dex_narrative":     "",
+        "status":            "OK",
+        "fecha":             fecha,
+    }
+
+    if not spot or spot <= 0:
+        base["status"] = "MISSING_DATA"
+        return base
+
+    contracts = chain_0dte.get("contracts", [])
+    if not contracts:
+        base["status"] = chain_0dte.get("status", "EMPTY_CHAIN")
+        return base
+
+    try:
+        dex_by_strike: dict[float, float] = {}
+        n_with_delta = 0
+
+        for c in contracts:
+            strike = float(c["strike"])
+            otype  = c["option_type"]
+            oi     = int(c.get("open_interest") or 0)
+            delta  = c.get("delta")
+
+            if delta is None:
+                continue
+            n_with_delta += 1
+
+            # Delta ya viene firmado (calls > 0, puts < 0).
+            # Sumamos directamente: puts contribuyen delta negativo (bajista),
+            # calls contribuyen delta positivo (alcista).
+            # No se aplica sign(otype) porque el signo ya está en delta.
+            dex = float(delta) * oi * 100 * spot / DEX_SCALE
+            dex_by_strike[strike] = dex_by_strike.get(strike, 0.0) + dex
+
+        if n_with_delta == 0:
+            base["status"] = "NO_DELTA_DATA"
+            return base
+
+        # Serializar
+        base["dex_by_strike"] = {
+            str(int(k)): round(v, 6) for k, v in dex_by_strike.items()
+        }
+        dex_total = sum(dex_by_strike.values())
+        base["dex_total"] = round(dex_total, 4)
+
+        # DEX acumulado (de strike más bajo a más alto)
+        strikes_sorted = sorted(dex_by_strike.keys())
+        cumulative = 0.0
+        cum_dict: dict[float, float] = {}
+        for s in strikes_sorted:
+            cumulative += dex_by_strike[s]
+            cum_dict[s] = cumulative
+        base["dex_cumulative"] = {
+            str(int(k)): round(v, 6) for k, v in cum_dict.items()
+        }
+
+        # DEX Flip — primer strike donde DEX acumulado cruza cero
+        dex_flip = None
+        prev_sign = None
+        for s in strikes_sorted:
+            curr_sign = 1 if cum_dict[s] >= 0 else -1
+            if prev_sign is not None and curr_sign != prev_sign:
+                dex_flip = s
+                break
+            prev_sign = curr_sign
+        base["dex_flip"] = dex_flip
+
+        # Walls
+        if dex_by_strike:
+            base["dex_positive_wall"] = max(dex_by_strike, key=dex_by_strike.get)
+            base["dex_negative_wall"] = min(dex_by_strike, key=dex_by_strike.get)
+
+        # Signal y narrativa
+        if dex_total >= 0:
+            base["dex_signal"]    = "DEALERS_LARGO_DELTA"
+            flip_str = f" sobre {dex_flip:.0f}" if dex_flip else ""
+            base["dex_narrative"] = (
+                f"Dealers netos largos delta — soporte si precio baja{flip_str}"
+            )
+        else:
+            base["dex_signal"]    = "DEALERS_CORTO_DELTA"
+            flip_str = f" sobre {dex_flip:.0f}" if dex_flip else ""
+            base["dex_narrative"] = (
+                f"Dealers netos cortos delta — resistencia adicional{flip_str}"
+            )
+
+    except Exception:
+        base["status"] = "ERROR"
+
+    return base
+
+
+def calc_pinning_zone(gex_result: dict, charm_result: dict, spot: float) -> dict:
+    """
+    Identifica el strike con mayor probabilidad de actuar como imán del precio.
+
+    Combina GEX walls y Charm Pin Zone. Un strike es candidato si:
+    1. Es Put Wall o Call Wall (alto GEX) dentro de ±100 pts del spot
+    2. Y/O es Charm Pin Zone (alto charm ATM) dentro de ±50 pts del spot
+
+    Args:
+        gex_result:   output de calc_net_gex
+        charm_result: output de calc_charm_exposure
+        spot:         precio spot del SPX
+
+    Returns:
+        {
+            "pinning_zone":       float | None,
+            "pinning_conf":       "ALTA" | "MEDIA" | "BAJA" | "NINGUNA",
+            "pinning_narrative":  str,
+        }
+    """
+    base: dict = {
+        "pinning_zone":      None,
+        "pinning_conf":      "NINGUNA",
+        "pinning_narrative": "No hay confluencia suficiente para identificar zona de pin.",
+    }
+
+    if not spot or spot <= 0:
+        return base
+
+    candidates: list[dict] = []
+
+    # Candidatos GEX (put_wall y call_wall dentro de ±100 pts)
+    for wall_key in ("call_wall", "put_wall"):
+        wall = gex_result.get(wall_key)
+        if wall and abs(wall - spot) <= 100:
+            gex_0 = (gex_result.get("net_gex_by_dte") or {}).get("0dte") or 0
+            score = abs(gex_0) * 0.6
+            candidates.append({"strike": wall, "score": score, "source": "GEX_WALL"})
+
+    # Candidato Charm Pin Zone (dentro de ±50 pts)
+    cp = charm_result.get("charm_pin_zone")
+    if cp and abs(cp - spot) <= 50:
+        charm_total = charm_result.get("charm_total") or 0
+        charm_score = abs(charm_total) / 100_000
+        candidates.append({"strike": cp, "score": charm_score, "source": "CHARM"})
+
+    if not candidates:
+        return base
+
+    # Elegir candidato con mayor score; detectar confluencia
+    best = max(candidates, key=lambda x: x["score"])
+    sources = {c["source"] for c in candidates if c["strike"] == best["strike"]}
+
+    has_gex   = "GEX_WALL" in sources
+    has_charm = "CHARM"    in sources
+
+    # Detectar si GEX_WALL y CHARM coinciden en el mismo strike
+    gex_strikes   = {c["strike"] for c in candidates if c["source"] == "GEX_WALL"}
+    charm_strikes = {c["strike"] for c in candidates if c["source"] == "CHARM"}
+    confluence = bool(gex_strikes & charm_strikes)
+
+    if confluence or (has_gex and has_charm):
+        conf = "ALTA"
+    elif best["score"] > 1.0:
+        conf = "MEDIA"
+    else:
+        conf = "BAJA"
+
+    base["pinning_zone"] = best["strike"]
+    base["pinning_conf"] = conf
+
+    if conf == "ALTA":
+        base["pinning_narrative"] = (
+            f"{best['strike']:.0f} — confluencia GEX Wall + Charm máximo ATM. "
+            "Imán de precio probable."
+        )
+    elif best["source"] == "GEX_WALL":
+        base["pinning_narrative"] = (
+            f"{best['strike']:.0f} — GEX Wall dominante. "
+            "Pin probable si el spot se acerca."
+        )
+    else:
+        base["pinning_narrative"] = (
+            f"{best['strike']:.0f} — Charm máximo ATM. "
+            "Atracción mecánica por decay 0DTE."
+        )
+
+    return base
+
+
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     import json
     from pathlib import Path
@@ -612,12 +1097,19 @@ if __name__ == "__main__":
     ivr       = calc_ivr(data, data.get("vix_history", {}))
     gap       = calc_overnight_gap(data, data)
     atr_ratio = calc_atr_ratio(data.get("spx_ohlcv", {}))
+    spx_spot = data.get("spx_spot")
+    fecha    = data.get("fecha")
+
     net_gex   = calc_net_gex(
         chain_0dte=data.get("option_chain_0dte", {}),
-        chain_multi=data.get("option_chain_multi", {}),
-        spot=data.get("spx_spot"),
-        fecha=data.get("fecha"),
+        chain_30dte=data.get("option_chain_30dte") or data.get("option_chain_multi", {}),
+        chain_7dte=data.get("option_chain_7dte"),
+        spot=spx_spot,
+        fecha=fecha,
     )
+    charm  = calc_charm_exposure(data.get("option_chain_0dte", {}), spx_spot, fecha)
+    dex    = calc_delta_exposure(data.get("option_chain_0dte", {}), spx_spot, fecha)
+    pin    = calc_pinning_zone(net_gex, charm, spx_spot)
 
     d_score = (slope["score"] + ratio["score"] + gap["score"]
                + net_gex["score_gex"] + net_gex["score_flip"]
@@ -625,13 +1117,16 @@ if __name__ == "__main__":
     v_score = ivr["score"] + atr_ratio["score"]
 
     indicators = {
-        "fecha":           data.get("fecha"),
+        "fecha":           fecha,
         "vix_vxv_slope":   slope,
         "vix9d_vix_ratio": ratio,
         "ivr":             ivr,
         "overnight_gap":   gap,
         "atr_ratio":       atr_ratio,
         "net_gex":         net_gex,
+        "charm_exposure":  charm,
+        "delta_exposure":  dex,
+        "pinning_zone":    pin,
         "d_score":         d_score,
         "v_score":         v_score,
     }
@@ -645,4 +1140,6 @@ if __name__ == "__main__":
           f"wall={net_gex['signal_wall_proximity']}({net_gex['score_wall_proximity']})  "
           f"ivr={ivr['signal']}({ivr['score']})  "
           f"atr={atr_ratio['signal']}({atr_ratio['score']})  "
+          f"charm={charm['charm_signal']}  dex={dex['dex_signal']}  "
+          f"pin={pin['pinning_zone']}({pin['pinning_conf']})  "
           f"D={d_score}  V={v_score}")
