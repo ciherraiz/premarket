@@ -332,6 +332,239 @@ def build_gex_heatmap(snapshots: list[dict]) -> bytes:
     return buf.read()
 
 
+def build_charm_heatmap(snapshots: list[dict]) -> bytes:
+    """
+    Genera el heatmap de Charm Exposure intraday.
+
+    Eje X: timestamp de cada snapshot (columna)
+    Eje Y: strikes (rango ±100 pts del spot medio)
+    Color: intensidad del charm_exposure por strike
+      positivo (dealers compran delta) → teal/cyan
+      negativo (dealers venden delta)  → magenta/rojo
+
+    Args:
+        snapshots: lista de snapshots GEX con campo "charm_by_strike"
+                   (formato del JSONL de gex_snapshots_YYYY-MM-DD.jsonl enriquecido)
+
+    Returns:
+        bytes PNG del heatmap.
+    """
+    import io
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import TwoSlopeNorm
+
+    BG = "#0d1117"
+    PA = "#161b22"
+    WH = "#FFFFFF"
+    GR = "#444444"
+
+    if not snapshots:
+        fig, ax = plt.subplots(figsize=(10, 6), facecolor=BG)
+        ax.set_facecolor(PA)
+        ax.text(0.5, 0.5, "Sin snapshots disponibles",
+                transform=ax.transAxes, color=WH, ha="center", va="center")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=120, facecolor=BG, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        return buf.read()
+
+    # Recopilar todos los strikes y timestamps
+    all_strikes: set[float] = set()
+    for snap in snapshots:
+        for k in snap.get("charm_by_strike", {}):
+            all_strikes.add(float(k))
+
+    if not all_strikes:
+        # No hay datos de charm en los snapshots
+        fig, ax = plt.subplots(figsize=(10, 6), facecolor=BG)
+        ax.set_facecolor(PA)
+        ax.text(0.5, 0.5, "Sin datos de Charm Exposure en snapshots",
+                transform=ax.transAxes, color=WH, ha="center", va="center", fontsize=9)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=120, facecolor=BG, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        return buf.read()
+
+    # Filtrar strikes ±100 pts del spot medio
+    spots = [s.get("spot") for s in snapshots if s.get("spot")]
+    spot_mid = float(np.mean(spots)) if spots else float(np.mean(list(all_strikes)))
+    filtered_strikes = sorted(s for s in all_strikes if abs(s - spot_mid) <= 100)
+
+    if not filtered_strikes:
+        filtered_strikes = sorted(all_strikes)
+
+    timestamps = []
+    for snap in snapshots:
+        ts = snap.get("timestamp") or snap.get("ts") or ""
+        try:
+            dt = datetime.fromisoformat(ts)
+            timestamps.append(dt.strftime("%H:%M"))
+        except Exception:
+            timestamps.append(ts[:5] if len(ts) >= 5 else ts)
+
+    # Construir matriz: filas=strikes, columnas=snapshots
+    matrix = np.zeros((len(filtered_strikes), len(snapshots)))
+    for j, snap in enumerate(snapshots):
+        charm_map = snap.get("charm_by_strike", {})
+        for i, strike in enumerate(filtered_strikes):
+            matrix[i, j] = charm_map.get(str(int(strike)), 0.0)
+
+    # Colormap divergente centrado en 0
+    vmax = max(abs(matrix.max()), abs(matrix.min()), 1e-6)
+    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
+
+    fig, ax = plt.subplots(figsize=(max(10, len(snapshots) * 0.5), 8), facecolor=BG)
+    ax.set_facecolor(PA)
+
+    im = ax.imshow(
+        matrix, aspect="auto", origin="lower",
+        cmap="coolwarm", norm=norm,
+        extent=[-0.5, len(snapshots) - 0.5, -0.5, len(filtered_strikes) - 0.5],
+    )
+
+    # Etiquetas ejes
+    ax.set_xticks(range(len(timestamps)))
+    ax.set_xticklabels(timestamps, color=WH, fontsize=6, rotation=45)
+    ax.set_yticks(range(len(filtered_strikes)))
+    ax.set_yticklabels([f"{int(s)}" for s in filtered_strikes], color=WH, fontsize=6)
+
+    # Overlay: línea spot y charm pin zones
+    for j, snap in enumerate(snapshots):
+        snap_spot = snap.get("spot")
+        if snap_spot:
+            try:
+                idx = min(range(len(filtered_strikes)),
+                          key=lambda i: abs(filtered_strikes[i] - snap_spot))
+                ax.plot(j, idx, "w.", markersize=3, alpha=0.7)
+            except Exception:
+                pass
+
+        pin = snap.get("charm_pin_zone")
+        if pin:
+            try:
+                idx = min(range(len(filtered_strikes)),
+                          key=lambda i: abs(filtered_strikes[i] - float(pin)))
+                ax.plot(j, idx, "yo", markersize=4, alpha=0.6)
+            except Exception:
+                pass
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.8)
+    cbar.ax.tick_params(colors=WH, labelsize=6)
+    cbar.set_label("Charm Exposure (δ/día × OI)", color=WH, fontsize=7)
+
+    fecha_str = snapshots[0].get("fecha", "") if snapshots else ""
+    ax.set_title(f"SPX — Dealer Charm Exposure Heatmap  {fecha_str}",
+                 color=WH, fontsize=9, pad=6)
+    ax.set_xlabel("Hora ET", color=WH, fontsize=8)
+    ax.set_ylabel("Strike", color=WH, fontsize=8)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=HEATMAP_DPI, facecolor=BG, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def build_gex_change_chart(gex_change: dict, spot: float, fecha: str = "") -> bytes:
+    """
+    Genera las barras de GEX Change vs apertura.
+
+    Args:
+        gex_change: dict con campo "gex_change_by_strike" (output de calc_gex_change)
+                    o directamente el dict {strike_str: cambio_float}
+        spot:       precio spot del SPX
+        fecha:      fecha del análisis
+
+    Returns:
+        bytes PNG.
+    """
+    import io
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    BG   = "#0d1117"
+    PA   = "#161b22"
+    WH   = "#FFFFFF"
+    GR   = "#444444"
+    CYAN = "#00FFFF"
+    MAG  = "#FF00FF"
+
+    # Admitir tanto el dict directo como el output de calc_gex_change
+    if "gex_change_by_strike" in gex_change:
+        raw = gex_change["gex_change_by_strike"]
+    else:
+        raw = gex_change
+
+    changes = {float(k): float(v) for k, v in raw.items()}
+
+    fig, ax = plt.subplots(figsize=(8, 7), facecolor=BG)
+    ax.set_facecolor(PA)
+    ax.tick_params(colors=WH, labelsize=7)
+    for spine in ax.spines.values():
+        spine.set_edgecolor(GR)
+
+    if not changes:
+        ax.text(0.5, 0.5, "Sin datos de GEX Change",
+                transform=ax.transAxes, color=WH, ha="center", va="center")
+        ax.set_title("SPX — Dealer GEX Change vs apertura", color=WH, fontsize=9)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=120, facecolor=BG, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        return buf.read()
+
+    # Seleccionar los N_STRIKES más cercanos al spot
+    N = 25
+    all_strikes = sorted(changes.keys(), key=lambda s: abs(s - spot))[:N]
+    all_strikes = sorted(all_strikes)
+    vals   = [changes[s] for s in all_strikes]
+    colors = [CYAN if v >= 0 else MAG for v in vals]
+
+    y_pos = range(len(all_strikes))
+    ax.barh(list(y_pos), vals, color=colors, height=0.7, alpha=0.85)
+    ax.axvline(0, color=GR, linewidth=0.8)
+
+    ax.set_yticks(list(y_pos))
+    ax.set_yticklabels([f"{int(s)}" for s in all_strikes], fontsize=6)
+    ax.set_xlabel("ΔGEX vs apertura (B)", color=WH, fontsize=7)
+
+    # Línea spot
+    try:
+        idx_spot = min(range(len(all_strikes)), key=lambda i: abs(all_strikes[i] - spot))
+        ax.axhline(idx_spot, color=WH, linewidth=1.5, linestyle="-", alpha=0.7)
+        ax.text(0, idx_spot + 0.3, f"SPX {spot:.0f}", color=WH, fontsize=5)
+    except Exception:
+        pass
+
+    patches = [
+        mpatches.Patch(color=CYAN, label="GEX ganado"),
+        mpatches.Patch(color=MAG,  label="GEX perdido"),
+    ]
+    ax.legend(handles=patches, fontsize=6, loc="lower right",
+              facecolor=PA, labelcolor=WH, framealpha=0.6)
+
+    title = f"SPX — Dealer GEX Change vs apertura"
+    if fecha:
+        title += f"  {fecha}"
+    ax.set_title(title, color=WH, fontsize=9, pad=4)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=120, facecolor=BG, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
 def send_heatmap_telegram(img_bytes: bytes, caption: str) -> None:
     """Envía la imagen PNG a Telegram usando las credenciales de notify_telegram."""
     from scripts.notify_telegram import send_telegram_photo

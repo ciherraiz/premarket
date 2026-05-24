@@ -1,5 +1,10 @@
 import json
+import os
+import sys
 from pathlib import Path
+
+# Asegurar que scripts/ está en el path para imports internos
+sys.path.insert(0, os.path.dirname(__file__))
 
 
 def print_scorecard(indicators: dict, phase: str = "premarket") -> None:
@@ -151,6 +156,88 @@ def print_scorecard(indicators: dict, phase: str = "premarket") -> None:
     print(line)
     print(f"  D-Score (direccional):  {_sign(d_score)}")
     print()
+
+    # --- DEALER FLOW block ---
+    charm_data = data.get("charm_exposure", {})
+    dex_data   = data.get("delta_exposure", {})
+    pin_data   = data.get("pinning_zone", {})
+
+    has_dealer_flow = (
+        charm_data.get("status") == "OK" or
+        dex_data.get("status") == "OK" or
+        pin_data.get("pinning_zone") is not None
+    )
+
+    if has_dealer_flow:
+        print("  [DEALER FLOW]")
+        print(f"  {'Indicador':<22} {'Valor':<30} Signal")
+        print(line)
+
+        # Charm Exposure
+        charm_status = charm_data.get("status", "N/A")
+        if charm_status == "OK":
+            c_total  = charm_data.get("charm_total")
+            c_signal = charm_data.get("charm_signal", "N/A")
+            c_k      = f"{c_total/1000:+.0f}K δ/h" if c_total is not None else "N/A"
+            print(f"  {'Charm Exposure':<22} {c_k:<30} {c_signal}")
+        else:
+            print(f"  {'Charm Exposure':<22} [{charm_status}]")
+
+        # Delta Exposure
+        dex_status = dex_data.get("status", "N/A")
+        if dex_status == "OK":
+            d_total  = dex_data.get("dex_total")
+            d_flip   = dex_data.get("dex_flip")
+            d_signal = dex_data.get("dex_signal", "N/A")
+            d_val    = f"DEX={d_total:+.1f}B" if d_total is not None else "N/A"
+            if d_flip:
+                d_val += f"  flip={d_flip:.0f}"
+            print(f"  {'Delta Exposure':<22} {d_val:<30} {d_signal}")
+        else:
+            print(f"  {'Delta Exposure':<22} [{dex_status}]")
+
+        # Pinning Zone
+        pin_zone = pin_data.get("pinning_zone")
+        pin_conf = pin_data.get("pinning_conf", "N/A")
+        if pin_zone:
+            spot_val = net_gex.get("spot") or 0
+            dist_pin = pin_zone - spot_val if spot_val else 0
+            pin_val  = f"PIN={pin_zone:.0f}  dist={dist_pin:+.0f}pts"
+            print(f"  {'Pinning Zone':<22} {pin_val:<30} {pin_conf}")
+
+        # Net GEX by DTE
+        nbd = net_gex.get("net_gex_by_dte", {})
+        g0  = nbd.get("0dte")
+        g7  = nbd.get("7dte")
+        g30 = nbd.get("30dte")
+        if any(v is not None for v in [g0, g7, g30]):
+            parts = []
+            if g0  is not None: parts.append(f"0d:{g0:+.1f}")
+            if g7  is not None: parts.append(f"7d:{g7:+.1f}")
+            if g30 is not None: parts.append(f"30d:{g30:+.1f}")
+            print(f"  {'Net GEX por DTE':<22} {' | '.join(parts)}")
+
+        print(line)
+
+        # Price paths
+        try:
+            from gex_narrative import calc_price_paths
+            spot_val = net_gex.get("spot") or 0
+            paths = calc_price_paths(net_gex, charm_data, dex_data, spot_val)
+            path_alc = paths["path_alcista"]
+            path_baj = paths["path_bajista"]
+            if len(path_alc) > 1:
+                print("  ↑  " + " → ".join(f"{p:.0f}" for p in path_alc))
+            if len(path_baj) > 1:
+                print("  ↓  " + " → ".join(f"{p:.0f}" for p in path_baj))
+            key_dec  = paths.get("key_decision")
+            key_desc = paths.get("key_decision_desc", "")
+            if key_dec and key_desc:
+                print(f"  📌 {key_desc}")
+        except Exception:
+            pass
+
+        print()
 
     # --- V-SCORE block ---
     print("  [V-SCORE - VOLATILIDAD]")
