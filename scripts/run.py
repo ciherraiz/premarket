@@ -54,16 +54,20 @@ def run_premarket_phase(out: Path) -> dict:
         spx_spot = spx_ohlcv_data["ohlcv"][-1]["Close"]
 
     chain_0dte  = fetch_option_chain(
-        "SPXW", days_ahead=0, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
+        "SPXW", max_dte=0,  max_strikes=GEX_MAX_STRIKES, spot=spx_spot
     )
-    chain_multi = fetch_option_chain(
-        "SPXW", days_ahead=5, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
+    chain_7dte  = fetch_option_chain(
+        "SPXW", max_dte=7,  max_strikes=GEX_MAX_STRIKES, spot=spx_spot
+    )
+    chain_30dte = fetch_option_chain(
+        "SPXW", max_dte=30, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
     )
 
-    data["spx_ohlcv"]          = spx_ohlcv_data
-    data["spx_spot"]           = spx_spot
-    data["option_chain_0dte"]  = chain_0dte
-    data["option_chain_multi"] = chain_multi
+    data["spx_ohlcv"]           = spx_ohlcv_data
+    data["spx_spot"]            = spx_spot
+    data["option_chain_0dte"]   = chain_0dte
+    data["option_chain_7dte"]   = chain_7dte
+    data["option_chain_30dte"]  = chain_30dte
 
     # Guardar data.json con namespace
     data_out = {"fecha": data.get("fecha"), "status": data.get("status"),
@@ -79,7 +83,8 @@ def run_premarket_phase(out: Path) -> dict:
           f"es={data['es']['status']} "
           f"spx_ohlcv={spx_ohlcv_data['status']}(bars={spx_ohlcv_data['bars']}) "
           f"chain_0dte={chain_0dte['status']}(n={chain_0dte['n_contracts']}) "
-          f"chain_multi={chain_multi['status']}(n={chain_multi['n_contracts']})")
+          f"chain_7dte={chain_7dte['status']}(n={chain_7dte['n_contracts']}) "
+          f"chain_30dte={chain_30dte['status']}(n={chain_30dte['n_contracts']})")
 
     if data["status"] != "OK":
         print(f"[ERROR] fetch: status={data['status']}", file=sys.stderr)
@@ -93,7 +98,8 @@ def run_premarket_phase(out: Path) -> dict:
     atr_ratio = calc_atr_ratio(data.get("spx_ohlcv", {}))
     net_gex   = calc_net_gex(
         chain_0dte=data.get("option_chain_0dte", {}),
-        chain_multi=data.get("option_chain_multi", {}),
+        chain_30dte=data.get("option_chain_30dte", {}),
+        chain_7dte=data.get("option_chain_7dte"),
         spot=data.get("spx_spot"),
         fecha=data.get("fecha"),
     )
@@ -207,7 +213,7 @@ def run_open_phase(out: Path, window_minutes: int) -> dict:
 
     es_quote    = fetch_es_quote()
     chain_0dte  = fetch_option_chain(
-        "SPXW", days_ahead=0, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
+        "SPXW", max_dte=0, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
     )
 
     open_data = {

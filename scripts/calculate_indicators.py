@@ -426,18 +426,35 @@ def calc_atr_ratio(spx_ohlcv_data: dict) -> dict:
     return base
 
 
-def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -> dict:
+def calc_net_gex(
+    chain_0dte:  dict,
+    chain_30dte: dict,
+    spot:        float,
+    fecha:       str,
+    chain_7dte:  dict | None = None,
+    # Compatibilidad retroactiva — chain_multi es alias de chain_30dte
+    chain_multi: dict | None = None,
+) -> dict:
     """
     Calcula Net GEX, flip level, put/call wall y max pain.
 
     Args:
-        chain_0dte:  fetch_option_chain(days_ahead=0) — niveles intraday (flip, walls, max_pain)
-        chain_multi: fetch_option_chain(days_ahead=5) — régimen GEX total (net_gex_bn)
+        chain_0dte:  fetch_option_chain(max_dte=0) — niveles intraday (flip, walls, max_pain)
+        chain_30dte: fetch_option_chain(max_dte=30) — régimen GEX total (net_gex_bn)
         spot:        precio del SPX (float o None)
         fecha:       fecha del análisis "YYYY-MM-DD"
+        chain_7dte:  fetch_option_chain(max_dte=7) — bucket semanal (opcional)
+        chain_multi: alias retroactivo de chain_30dte (deprecated)
     """
+    # Compatibilidad retroactiva
+    if chain_30dte is None and chain_multi is not None:
+        chain_30dte = chain_multi
+    if chain_30dte is None:
+        chain_30dte = {}
+
     base = {
         "net_gex_bn":        None,
+        "net_gex_by_dte":    {"0dte": None, "7dte": None, "30dte": None},
         "score_gex":         0,
         "signal_gex":        None,
         "flip_level":        None,
@@ -463,9 +480,9 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
     }
 
     try:
-        # Validar cadena multi (fuente del régimen GEX)
-        multi_status    = chain_multi.get("status", "ERROR")
-        multi_contracts = chain_multi.get("contracts", [])
+        # Validar cadena 30dte (fuente del régimen GEX)
+        multi_status    = chain_30dte.get("status", "ERROR")
+        multi_contracts = chain_30dte.get("contracts", [])
 
         if multi_status in ("EMPTY_CHAIN", "MISSING_DATA") or not multi_contracts:
             base["status"] = multi_status if multi_status != "OK" else "EMPTY_CHAIN"
@@ -479,7 +496,7 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
             base["status"] = "MISSING_DATA"
             return base
 
-        # --- Net GEX total (cadena multi-día) ---
+        # --- Net GEX total (cadena 30dte) ---
         gex_all       = {}
         n_with_gamma  = 0
         expiries_seen = set()
@@ -506,6 +523,32 @@ def calc_net_gex(chain_0dte: dict, chain_multi: dict, spot: float, fecha: str) -
         net_gex_bn = sum(gex_all.values())
         base["net_gex_bn"] = round(net_gex_bn, 4)
         base["n_expiries"] = len(expiries_seen)
+
+        # --- Net GEX por bucket DTE ---
+        def _sum_gex_bucket(contracts: list) -> float | None:
+            """Suma el GEX neto de una lista de contratos."""
+            total = 0.0
+            found = False
+            for c in contracts:
+                g = c.get("gamma")
+                oi = int(c.get("open_interest") or 0)
+                if not g or g <= 0:
+                    continue
+                sign = 1 if c["option_type"] == "C" else -1
+                total += g * oi * spot * spot / 1_000_000_000 * sign
+                found = True
+            return round(total, 4) if found else None
+
+        base["net_gex_by_dte"]["30dte"] = round(net_gex_bn, 4)
+
+        _c0 = chain_0dte.get("contracts", [])
+        if _c0:
+            base["net_gex_by_dte"]["0dte"] = _sum_gex_bucket(_c0)
+
+        if chain_7dte:
+            _c7 = chain_7dte.get("contracts", [])
+            if _c7:
+                base["net_gex_by_dte"]["7dte"] = _sum_gex_bucket(_c7)
 
         # Score GEX (IND-03) — umbrales asimétricos calibrados al OI del SPX
         if net_gex_bn > GEX_UMBRAL_FUERTE:
@@ -662,7 +705,8 @@ if __name__ == "__main__":
     atr_ratio = calc_atr_ratio(data.get("spx_ohlcv", {}))
     net_gex   = calc_net_gex(
         chain_0dte=data.get("option_chain_0dte", {}),
-        chain_multi=data.get("option_chain_multi", {}),
+        chain_30dte=data.get("option_chain_30dte") or data.get("option_chain_multi", {}),
+        chain_7dte=data.get("option_chain_7dte"),
         spot=data.get("spx_spot"),
         fecha=data.get("fecha"),
     )

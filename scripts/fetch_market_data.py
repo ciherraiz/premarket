@@ -407,27 +407,30 @@ def fetch_es_quote() -> dict:
 
 def fetch_option_chain(
     symbol: str = "SPXW",
-    days_ahead: int = 5,
+    max_dte: int = 0,
     max_strikes: int = GEX_MAX_STRIKES,
     spot: float | None = None,
 ) -> dict:
     """
-    Obtiene la cadena de opciones para hoy + los próximos days_ahead días naturales,
-    limitada a max_strikes strikes ATM por vencimiento.
+    Obtiene todos los contratos con DTE <= max_dte, limitada a max_strikes
+    strikes ATM por vencimiento.
 
     Args:
         symbol:      símbolo de opciones (default "SPXW")
-        days_ahead:  días naturales adicionales a hoy (default 5)
+        max_dte:     días hasta vencimiento máximo (default 0 = solo hoy)
+                     0  → solo el vencimiento de hoy (0DTE)
+                     7  → todos los vencimientos hasta 7 días naturales
+                     30 → todos los vencimientos hasta 30 días naturales
         max_strikes: strikes máximos por vencimiento, pasado a get_option_chain()
         spot:        precio de referencia para seleccionar strikes ATM
 
     Returns:
         {
-            "contracts":   list[dict],
+            "contracts":   list[dict],   # cada contrato incluye campo "dte"
             "expiries":    list[str],
             "n_contracts": int,
             "max_strikes": int,
-            "status":      str,   # "OK" | "ERROR" | "EMPTY_CHAIN"
+            "status":      str,   # "OK" | "ERROR" | "EMPTY_CHAIN" | "MISSING_DATA"
         }
     """
     result = {
@@ -448,8 +451,9 @@ def fetch_option_chain(
         all_contracts = []
         processed_expiries = []
 
-        for i in range(days_ahead + 1):
-            expiry_str = str(today + timedelta(days=i))
+        for i in range(max_dte + 1):
+            expiry_date = today + timedelta(days=i)
+            expiry_str  = str(expiry_date)
             contracts = client.get_option_chain(
                 symbol,
                 expiry=expiry_str,
@@ -457,6 +461,12 @@ def fetch_option_chain(
                 spot=spot,
             )
             if contracts:
+                # Añadir campo dte a cada contrato (puede ya venir del cliente,
+                # pero lo calculamos aquí también para garantizar coherencia)
+                dte = (expiry_date - today).days
+                for c in contracts:
+                    if "dte" not in c:
+                        c["dte"] = dte
                 all_contracts.extend(contracts)
                 processed_expiries.append(expiry_str)
 
@@ -495,17 +505,21 @@ if __name__ == "__main__":
         spx_spot = spx_ohlcv_data["ohlcv"][-1]["Close"]
 
     chain_0dte  = fetch_option_chain(
-        "SPXW", days_ahead=0, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
+        "SPXW", max_dte=0,  max_strikes=GEX_MAX_STRIKES, spot=spx_spot
     )
-    chain_multi = fetch_option_chain(
-        "SPXW", days_ahead=5, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
+    chain_7dte  = fetch_option_chain(
+        "SPXW", max_dte=7,  max_strikes=GEX_MAX_STRIKES, spot=spx_spot
+    )
+    chain_30dte = fetch_option_chain(
+        "SPXW", max_dte=30, max_strikes=GEX_MAX_STRIKES, spot=spx_spot
     )
 
     data = {**vix_data, **es_prev_data, **es_data}
-    data["spx_ohlcv"]          = spx_ohlcv_data
-    data["spx_spot"]           = spx_spot
-    data["option_chain_0dte"]  = chain_0dte
-    data["option_chain_multi"] = chain_multi
+    data["spx_ohlcv"]           = spx_ohlcv_data
+    data["spx_spot"]            = spx_spot
+    data["option_chain_0dte"]   = chain_0dte
+    data["option_chain_7dte"]   = chain_7dte
+    data["option_chain_30dte"]  = chain_30dte
     data["fecha"] = vix_data.get("fecha") or str(date.today())
 
     (out / "data.json").write_text(json.dumps(data, indent=2))
@@ -513,4 +527,5 @@ if __name__ == "__main__":
           f"vix_history={vix_data['vix_history']['status']} "
           f"spx_ohlcv={spx_ohlcv_data['status']}(bars={spx_ohlcv_data['bars']}) "
           f"chain_0dte={chain_0dte['status']}(n={chain_0dte['n_contracts']}) "
-          f"chain_multi={chain_multi['status']}(n={chain_multi['n_contracts']})")
+          f"chain_7dte={chain_7dte['status']}(n={chain_7dte['n_contracts']}) "
+          f"chain_30dte={chain_30dte['status']}(n={chain_30dte['n_contracts']})")
