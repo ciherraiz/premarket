@@ -397,6 +397,68 @@ def send_telegram_photo(photo_bytes: bytes, caption: str = "") -> bool:
     return True
 
 
+# ── Dealer Flow report ────────────────────────────────────────────────────────
+
+def send_dealer_flow_report(indicators: dict) -> bool:
+    """
+    Envía el reporte completo de Dealer Flow a Telegram:
+      1. Imagen multi-panel premarket (PNG) con caption del texto Dealer Flow
+      2. Si la imagen falla, envía solo el texto como mensaje
+
+    Args:
+        indicators: dict de indicadores (sección "premarket" o raíz de indicators.json)
+
+    Returns:
+        True si al menos un mensaje se envió con éxito.
+    """
+    data = indicators.get("premarket", indicators)
+
+    # Construir texto Dealer Flow
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from gex_narrative import build_dealer_flow_text
+        dealer_text = build_dealer_flow_text(data)
+    except Exception as e:
+        print(f"[notify] WARN build_dealer_flow_text: {e}", file=sys.stderr)
+        dealer_text = ""
+
+    # Intentar enviar imagen + caption
+    img_sent = False
+    try:
+        from gex_dashboard import build_premarket_dashboard
+        img_bytes = build_premarket_dashboard(data)
+
+        # Telegram limita caption a 1024 chars — truncar si es necesario
+        caption = dealer_text[:1000] + ("…" if len(dealer_text) > 1000 else "")
+        img_sent = send_telegram_photo(img_bytes, caption)
+        if img_sent:
+            print("[notify] Dashboard Dealer Flow enviado a Telegram ✓")
+    except Exception as e:
+        print(f"[notify] WARN build_premarket_dashboard: {e}", file=sys.stderr)
+
+    # Si la imagen no se pudo enviar, enviar solo texto (MarkdownV2 no disponible aquí,
+    # enviamos texto plano sin parse_mode)
+    if not img_sent and dealer_text:
+        token   = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if token and chat_id:
+            try:
+                url  = TELEGRAM_API.format(token=token)
+                resp = httpx.post(
+                    url,
+                    json={"chat_id": chat_id, "text": dealer_text[:4096]},
+                    timeout=10,
+                )
+                if resp.is_success:
+                    print("[notify] Texto Dealer Flow enviado a Telegram ✓")
+                    return True
+            except Exception as e2:
+                print(f"[notify] WARN fallback texto: {e2}", file=sys.stderr)
+        return False
+
+    return img_sent
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:

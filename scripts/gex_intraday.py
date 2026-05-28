@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from scripts.calculate_indicators import calc_net_gex
+from scripts.calculate_indicators import calc_net_gex, calc_charm_exposure, calc_delta_exposure
 
 ET = ZoneInfo("America/New_York")
 
@@ -110,12 +110,15 @@ def take_gex_snapshot(client=None, spot: float | None = None,
         }
 
         # Calcular GEX
-        gex = calc_net_gex(chain_0dte, chain_0dte, spot=spot, fecha=fecha)
+        gex   = calc_net_gex(chain_0dte, chain_0dte, spot=spot, fecha=fecha)
+        charm = calc_charm_exposure(chain_0dte, spot, fecha)
+        dex   = calc_delta_exposure(chain_0dte, spot, fecha)
 
         now = _now_et()
-        return {
+        snapshot = {
             "ts":                now.strftime("%Y-%m-%dT%H:%M:%S"),
             "ts_et":             now.isoformat(),
+            "fecha":             fecha,
             "spot":              spot,
             "es_basis":          es_basis,
             "net_gex_bn":        gex.get("net_gex_bn"),
@@ -131,7 +134,17 @@ def take_gex_snapshot(client=None, spot: float | None = None,
             "gex_pct_by_strike": gex.get("gex_pct_by_strike", {}),
             "n_strikes":         gex.get("n_strikes", 0),
             "status":            gex.get("status", "ERROR"),
+            # ── Dealer Flow fields (Fase 3) ───────────────────────────────
+            "charm_by_strike":   charm.get("charm_by_strike", {}),
+            "charm_total":       charm.get("charm_total"),
+            "charm_signal":      charm.get("charm_signal"),
+            "charm_pin_zone":    charm.get("charm_pin_zone"),
+            "dex_by_strike":     dex.get("dex_by_strike", {}),
+            "dex_total":         dex.get("dex_total"),
+            "dex_signal":        dex.get("dex_signal"),
+            "dex_flip":          dex.get("dex_flip"),
         }
+        return snapshot
 
     except Exception:
         return _error_snapshot(spot, "ERROR", es_price)
@@ -215,6 +228,52 @@ def detect_shift(prev: dict | None, curr: dict) -> dict | None:
         "es_basis":    curr.get("es_basis"),
         "ts":          curr.get("ts", ""),
         "regime_text": curr.get("regime_text", ""),
+    }
+
+
+def calc_gex_change(ref_snapshot: dict, curr_snapshot: dict) -> dict:
+    """
+    Calcula el cambio de GEX por strike entre dos snapshots.
+
+    El GEX Change muestra qué strikes están ganando o perdiendo relevancia
+    durante la sesión respecto a un snapshot de referencia (apertura del día
+    o el snapshot anterior).
+
+    Args:
+        ref_snapshot:  snapshot de referencia (p.ej. apertura del día)
+        curr_snapshot: snapshot actual
+
+    Returns:
+        {
+            "gex_change_by_strike": dict[str, float],  # gex_curr - gex_ref por strike
+            "strikes_gaining":      list[float],        # top 5 strikes con GEX más positivo
+            "strikes_losing":       list[float],        # top 5 strikes con GEX más negativo
+            "net_change":           float,              # cambio neto total
+            "ref_ts":               str,
+            "curr_ts":              str,
+        }
+    """
+    ref_gex  = ref_snapshot.get("gex_by_strike",  {})
+    curr_gex = curr_snapshot.get("gex_by_strike", {})
+
+    all_strikes = set(ref_gex.keys()) | set(curr_gex.keys())
+    gex_change  = {
+        s: (curr_gex.get(s, 0.0) or 0.0) - (ref_gex.get(s, 0.0) or 0.0)
+        for s in all_strikes
+    }
+
+    sorted_changes = sorted(gex_change.items(), key=lambda x: x[1])
+    strikes_losing  = [float(s) for s, v in sorted_changes[:5]  if v < 0]
+    strikes_gaining = [float(s) for s, v in sorted_changes[-5:] if v > 0]
+    net_change      = sum(gex_change.values())
+
+    return {
+        "gex_change_by_strike": {k: round(v, 6) for k, v in gex_change.items()},
+        "strikes_gaining":      strikes_gaining,
+        "strikes_losing":       strikes_losing,
+        "net_change":           round(net_change, 4),
+        "ref_ts":               ref_snapshot.get("ts", ""),
+        "curr_ts":              curr_snapshot.get("ts", ""),
     }
 
 
