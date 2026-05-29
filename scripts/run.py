@@ -382,6 +382,12 @@ def main():
         print_scorecard(indicators)
         if args.notify:
             _call_notify("premarket")
+            # Enviar reporte Dealer Flow (dashboard PNG + texto)
+            try:
+                from notify_telegram import send_dealer_flow_report
+                send_dealer_flow_report(indicators)
+            except Exception as _e:
+                print(f"[notify] WARN dealer_flow_report: {_e}", file=sys.stderr)
             # Enviar auto-levels calculados durante run_premarket_phase
             try:
                 from datetime import date as _date

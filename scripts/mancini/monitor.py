@@ -212,6 +212,7 @@ class ManciniMonitor:
         self._last_tweet_check: float = 0
         self._last_gex_poll_ts: float = 0
         self._last_gex_snapshot: dict | None = None
+        self._opening_gex_snapshot: dict | None = None
         self._level_contexts: dict[float, str] = {}  # level → último contexto conocido
         self._active_signals: dict[float, FailedBreakdownSignal] = {}  # level → señal activa
 
@@ -898,10 +899,20 @@ class ManciniMonitor:
             _log(f"GEX snapshot: {snapshot.get('status')}")
             return True  # intentó pero falló — sí avanzar el timestamp
 
+        # Calcular GEX Change respecto al snapshot de apertura
+        try:
+            from scripts.gex_intraday import calc_gex_change
+            opening = getattr(self, "_opening_gex_snapshot", None)
+            if opening is not None:
+                snapshot["gex_change"] = calc_gex_change(opening, snapshot)
+        except Exception as _e:
+            _log(f"GEX change calc error: {_e}")
+
         save_snapshot(snapshot)
 
         is_first = self._last_gex_snapshot is None
         if is_first:
+            self._opening_gex_snapshot = snapshot   # guardar snapshot de apertura
             auto = load_auto_levels(AUTO_LEVELS_PATH)
             notifier.notify_gex_open(snapshot, auto_levels=auto)
         else:
