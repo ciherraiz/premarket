@@ -532,6 +532,74 @@ def notify_gex_shift(shift: dict) -> bool:
     return send_telegram("\n".join(lines))
 
 
+def notify_charm_shift(prev_snapshot: dict, curr_snapshot: dict) -> bool:
+    """
+    Alerta: el charm_signal ha cambiado entre dos snapshots intraday.
+
+    Se emite cuando los dealers pasan de comprar delta (EXPANSIVO) a vender
+    (SUPRESIVO) o viceversa — indica un cambio de sesgo mecánico intraday.
+    """
+    prev_signal = prev_snapshot.get("charm_signal", "NEUTRO") or "NEUTRO"
+    curr_signal = curr_snapshot.get("charm_signal", "NEUTRO") or "NEUTRO"
+    charm_total = curr_snapshot.get("charm_total")
+    pin_zone    = curr_snapshot.get("charm_pin_zone")
+    spot        = curr_snapshot.get("spot")
+    ts          = (curr_snapshot.get("ts", "") or "")[:16].replace("T", " ")
+
+    signal_emoji = {
+        "EXPANSIVO":  "⬆️",
+        "SUPRESIVO":  "⬇️",
+        "NEUTRO":     "➡️",
+    }
+
+    charm_k = f"{charm_total/1000:+.0f}K δ/h" if charm_total is not None else "N/A"
+    pin_str  = f" \\| Pin: {int(pin_zone)}" if pin_zone else ""
+    spot_str = f"Spot: {int(spot)}" if spot else "Spot: N/A"
+
+    lines = [
+        "⚡ *Charm Shift detectado*",
+        "",
+        f"De: {signal_emoji.get(prev_signal, '➡️')} {_esc(prev_signal)} "
+        f"→ *{signal_emoji.get(curr_signal, '➡️')} {_esc(curr_signal)}*",
+        f"Dealers {_esc(charm_k)}{_esc(pin_str)}",
+        "",
+        f"📊 {_esc(spot_str)} \\| {_esc(ts)} ET",
+    ]
+    return send_telegram("\n".join(lines))
+
+
+def notify_pinning_change(prev_snapshot: dict, curr_snapshot: dict,
+                          threshold_pts: float = 25.0) -> bool:
+    """
+    Alerta: la charm_pin_zone se ha desplazado más de threshold_pts entre snapshots.
+
+    Indica que el strike de máxima atracción mecánica por decay ha migrado,
+    lo que puede señalar un cambio de objetivo de precio intraday.
+    """
+    prev_pin = prev_snapshot.get("charm_pin_zone")
+    curr_pin = curr_snapshot.get("charm_pin_zone")
+    spot     = curr_snapshot.get("spot")
+    ts       = (curr_snapshot.get("ts", "") or "")[:16].replace("T", " ")
+
+    if prev_pin is None or curr_pin is None:
+        return False
+
+    delta = curr_pin - prev_pin
+    if abs(delta) <= threshold_pts:
+        return False
+    spot_str = f"Spot: {int(spot)}" if spot else "Spot: N/A"
+
+    lines = [
+        "📍 *Pinning Zone desplazada*",
+        "",
+        f"Pin: {_esc(str(int(prev_pin)))} → *{_esc(str(int(curr_pin)))}* "
+        f"\\({'+' if delta >= 0 else ''}{int(delta)} pts\\)",
+        "",
+        f"📊 {_esc(spot_str)} \\| {_esc(ts)} ET",
+    ]
+    return send_telegram("\n".join(lines))
+
+
 def notify_session_summary(fecha: str, trades_count: int,
                            total_pnl: float) -> bool:
     """Alerta: resumen de la sesión al finalizar."""
