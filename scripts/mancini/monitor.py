@@ -916,10 +916,29 @@ class ManciniMonitor:
             auto = load_auto_levels(AUTO_LEVELS_PATH)
             notifier.notify_gex_open(snapshot, auto_levels=auto)
         else:
-            shift = detect_shift(self._last_gex_snapshot, snapshot)
+            prev = self._last_gex_snapshot
+
+            # GEX shift (flip / control node)
+            shift = detect_shift(prev, snapshot)
             if shift:
                 _log(f"GEX shift: {shift['type']} flip={shift['flip_prev']}→{shift['flip_curr']}")
                 notifier.notify_gex_shift(shift)
+
+            # Charm shift (EXPANSIVO ↔ SUPRESIVO)
+            prev_charm = prev.get("charm_signal") or "NEUTRO"
+            curr_charm = snapshot.get("charm_signal") or "NEUTRO"
+            if (prev_charm != curr_charm
+                    and "NEUTRO" not in (prev_charm, curr_charm)):
+                _log(f"Charm shift: {prev_charm}→{curr_charm}")
+                notifier.notify_charm_shift(prev, snapshot)
+
+            # Pinning change (charm_pin_zone > 25 pts)
+            prev_pin = prev.get("charm_pin_zone")
+            curr_pin = snapshot.get("charm_pin_zone")
+            if (prev_pin is not None and curr_pin is not None
+                    and abs(curr_pin - prev_pin) > 25):
+                _log(f"Pinning change: {prev_pin}→{curr_pin}")
+                notifier.notify_pinning_change(prev, snapshot)
 
         self._last_gex_snapshot = snapshot
         spx = snapshot.get("spot")
@@ -928,7 +947,8 @@ class ManciniMonitor:
         net_str = f"{net:+.2f}B" if net is not None else "N/A"
         _log(
             f"GEX snap — {spx_str} flip={snapshot.get('flip_level')} "
-            f"CN={snapshot.get('control_node')} net={net_str}"
+            f"CN={snapshot.get('control_node')} net={net_str} "
+            f"charm={snapshot.get('charm_signal')} pin={snapshot.get('charm_pin_zone')}"
         )
         return True
 
